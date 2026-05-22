@@ -21,7 +21,10 @@ A collection of runnable, copy-paste-ready tutorials covering the most common us
 
 ```bash
 # 1. Clone or download this repository
-git clone https://github.com/your-org/sinch-voice-tutorials.git
+git clone https://github.com/sinch/sinch-voice-tutorials.git
+or
+git clone git@github.com:sinch/sinch-voice-tutorials.git
+
 cd sinch-voice-tutorials
 
 # 2. Copy the example environment file and fill in your credentials
