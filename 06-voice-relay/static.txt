@@ -1,0 +1,40 @@
+{
+  "command": "accept",
+  "commands": [
+    {
+      "command": "answer"
+    },
+    {
+      "command": "bridgeCall",
+      "name": "main-bridge"
+    },
+    {
+      "command": "dial",
+      "name": "voice_relay_call",
+      "to": {
+        "type": "VOICE_RELAY",
+        "voiceRelay": {
+          "endpoint": "ws://387d-5-150-218-222.ngrok-free.app",
+          "ttsVoice": "Emma",
+          "sttLanguage": "en-US"
+        }
+      },
+      "events": {
+        "onAnswer": [
+          {
+            "command": "bridgeCall",
+            "name": "main-bridge"
+          }
+        ]
+      }
+    }
+  ],
+  "events": {
+    "onHangup": [
+      {
+        "command": "hangup",
+        "callName": "voice_relay_call"
+      }
+    ]
+  }
+}

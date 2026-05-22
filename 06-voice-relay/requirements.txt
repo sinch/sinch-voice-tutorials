@@ -1,0 +1,6 @@
+websockets
+python-dotenv
+langchain-core
+langchain-openai       # required for PROVIDER=openai
+langchain-anthropic    # required for PROVIDER=claude
+langchain-google-genai # required for PROVIDER=gemini

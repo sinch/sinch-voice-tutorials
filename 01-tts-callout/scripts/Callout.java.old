@@ -1,0 +1,117 @@
+// Sinch TTS Callout — dials a phone number and plays a text-to-speech message.
+// Requires Java 11+ (uses java.net.http.HttpClient).
+//
+// Maven pom.xml dependencies: none beyond JDK 11+
+// Compile: javac -d out Callout.java
+// Run:     java -cp out com.sinch.tutorials.ttscallout.Callout
+//
+// Set environment variables before running:
+//   export PROJECT_ID=...
+//   export KEY_ID=...
+//   export KEY_SECRET=...
+//   export SINCH_NUMBER=...
+//   export DESTINATION_NUMBER=...
+
+package com.sinch.tutorials.ttscallout;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.Base64;
+
+public class Callout {
+
+    public static void main(String[] args) throws Exception {
+        String projectId         = requireEnv("PROJECT_ID");
+        String keyId             = requireEnv("KEY_ID");
+        String keySecret         = requireEnv("KEY_SECRET");
+        String sinchNumber       = requireEnv("SINCH_NUMBER");
+        String destinationNumber = requireEnv("DESTINATION_NUMBER");
+
+        String baseUrl = "https://voice.api.sinch.com/v2/projects/" + projectId + "/calls";
+
+        // Basic Auth header: base64("keyId:keySecret")
+        String credentials = Base64.getEncoder()
+                .encodeToString((keyId + ":" + keySecret).getBytes());
+
+        // SVAML payload: dial -> on answer play TTS message -> hangup
+        String body = String.format("""
+            {
+              "commands": [
+                {
+                  "command": "dial",
+                  "name": "tts-notification",
+                  "from": {
+                    "type": "PHONE",
+                    "phone": { "number": "%s" }
+                  },
+                  "to": {
+                    "type": "PHONE",
+                    "phone": { "number": "%s" }
+                  },
+                  "dialTimeout": "30s",
+                  "maxDuration": "5m",
+                  "events": {
+                    "onAnswer": [
+                      {
+                        "command": "messages",
+                        "name": "notification",
+                        "messages": [
+                          {
+                            "type": "SAY",
+                            "say": {
+                              "text": "Hello! This is a test notification from Sinch. Your verification code is 4 8 3 7.",
+                              "voiceOptions": {
+                                "type": "VOICE",
+                                "voice": "Emily"
+                              }
+                            }
+                          }
+                        ],
+                        "events": {
+                          "onFinish": [
+                            { "command": "hangup" }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+            """, sinchNumber, destinationNumber);
+
+        System.out.println("Placing TTS callout from " + sinchNumber + " to " + destinationNumber + " ...");
+
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Basic " + credentials)
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        int statusCode = response.statusCode();
+        String responseBody = response.body();
+
+        if (statusCode == 201) {
+            System.out.println("Call created successfully:");
+            System.out.println(responseBody);
+        } else {
+            System.err.println("ERROR " + statusCode + ":");
+            System.err.println(responseBody);
+            System.exit(1);
+        }
+    }
+
+    private static String requireEnv(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            System.err.println("ERROR: " + name + " is not set. Export the variable before running.");
+            System.exit(1);
+        }
+        return value;
+    }
+}
