@@ -1,0 +1,13 @@
+{
+  "name": "sinch-ai-ivr",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sinch Voice API v2 — AI IVR relay server (3.4.5)",
+  "scripts": {
+    "start": "node scripts/relay-server.node.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

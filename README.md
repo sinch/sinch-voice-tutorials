@@ -1,6 +1,6 @@
-# Sinch Voice API Tutorials
+# Sinch Voice API v2 Tutorials
 
-A collection of runnable, copy-paste-ready tutorials covering the most common use cases for the [Sinch Voice API v2](https://developers.sinch.com/docs/voice/). Each tutorial includes a detailed description and working code examples in 6 languages and tools.
+Runnable, copy-paste-ready examples for the most common [Sinch Voice API v2](https://developers.sinch.com/docs/voice/) use cases.
 
 ---
 
@@ -11,201 +11,124 @@ A collection of runnable, copy-paste-ready tutorials covering the most common us
 | Sinch account | Sign up at [dashboard.sinch.com](https://dashboard.sinch.com) |
 | Sinch virtual number | Provision from the dashboard under **Numbers** |
 | API credentials | Create a key pair under **Settings → Access Keys** |
-| Runtime (choose one) | Node.js 18+, Python 3.8+, PHP 8+, Java 11+ |
-| ngrok | Required for tutorials that use webhook callbacks |
+| ngrok | Required for tutorials that use webhooks or WebSocket endpoints |
 | jq (optional) | Pretty-prints JSON output in shell scripts |
 
 ---
 
-## Quick Start
+## Setup
 
 ```bash
-# 1. Clone or download this repository
-git clone https://github.com/sinch/sinch-voice-tutorials.git
-or
-git clone git@github.com:sinch/sinch-voice-tutorials.git
-
-cd sinch-voice-tutorials
-
-# 2. Copy the example environment file and fill in your credentials
 cp .env.example .env
-# Edit .env — add your PROJECT_ID, KEY_ID, KEY_SECRET, SINCH_NUMBER, DESTINATION_NUMBER
-
-# 3. Pick a tutorial and run it
-cd 01-tts-callout/scripts
-bash callout.sh          # Shell
-python callout.py        # Python
-node callout.node.js     # Node.js
+# Fill in PROJECT_ID, KEY_ID, KEY_SECRET, SINCH_NUMBER, DESTINATION_NUMBER
 ```
 
----
+Tutorials that need a public URL (webhooks, WebSocket servers) also need ngrok:
 
-## Tutorials Overview
+```bash
+ngrok http 3000    # for webhook servers
+ngrok http 8765    # for WebSocket servers
+```
 
-| # | Use Case | Description | Guide |
-|---|---|---|---|
-| 01 | **TTS Callout** | Dial a number and play a text-to-speech message | [description.md](./01-tts-callout/description.md) |
-| 02 | **Number Masking** | Bridge two parties anonymously via a Sinch virtual number | [description.md](./02-number-masking/description.md) |
-| 03 | **WebSocket Agent** | Stream live call audio to a WebSocket server for AI/STT processing | [description.md](./03-websocket-agent/description.md) |
-| 04 | **Recording & Transcription** | Record calls and auto-transcribe to S3, GCS, or Azure | [description.md](./04-recording-transcription/description.md) |
-| 05 | **AMD** | Detect live humans vs. voicemail machines and react accordingly | [description.md](./05-amd/description.md) |
+Set `CALLBACK_URL=https://<your-id>.ngrok-free.app` for webhooks, or `WS_ENDPOINT=wss://<your-id>.ngrok-free.app` for WebSocket tutorials.
 
 ---
 
-## Environment Variables Reference
+## Tutorials
 
-All tutorials read credentials from a `.env` file at the project root. Copy `.env.example` and fill in the values.
+### 1. Outbound Calling
 
-| Variable | Required by | Description |
+| # | Tutorial | What it covers |
 |---|---|---|
-| `PROJECT_ID` | All | Your Sinch project UUID (from the dashboard) |
-| `KEY_ID` | All | API key ID (used as the Basic Auth username) |
-| `KEY_SECRET` | All | API key secret (used as the Basic Auth password) |
-| `SINCH_NUMBER` | All | Your Sinch virtual phone number in E.164 format (e.g. `+14045001000`) |
-| `DESTINATION_NUMBER` | All | The phone number to dial in E.164 format |
-| `CALLBACK_URL` | 02, 03, 04, 05 | Your publicly accessible server URL (e.g. from ngrok) |
-| `WS_ENDPOINT` | 03 | Your WebSocket endpoint URL (e.g. `wss://abc.ngrok-free.app`) |
-| `STORAGE_DESTINATION_URL` | 04 | Cloud storage bucket path (e.g. `s3://my-bucket/recordings/`) |
-| `STORAGE_CREDENTIALS` | 04 | Storage access credentials (`ACCESS_KEY:SECRET:REGION` for AWS) |
+| 1.1 | [Make an Outbound Call](./1.1-outbound-call/description.md) | POST a call, play TTS/audio, hang up — the "hello world" of Voice API v2 |
+| 1.2 | [Call Pacing (Batch Calls)](./1.2-call-pacing/description.md) | Dial many recipients with `maxCps` and `ttlSeconds`; track progress via the batch summary endpoint |
+| 1.3 | [Call Hunting](./1.3-call-hunting/description.md) | Sequential, simultaneous-ring, and tiered hunt patterns using `dial`, `bridgeCall`, and `hangup` |
 
----
+### 2. Inbound Calling
 
-## Common Setup: ngrok
+| # | Tutorial | What it covers |
+|---|---|---|
+| 2.1 | [Handle Inbound PSTN Calls](./2.1-inbound-pstn/description.md) | `callBehavior`, answering incoming calls, CloudEvents headers, webhook response contract |
+| 2.2 | [Call Forwarding](./2.2-call-forwarding/description.md) | Unconditional, no-answer, time-of-day, warm-transfer, and blind-transfer patterns |
 
-Several tutorials require a publicly accessible HTTP server to receive Sinch webhook events. [ngrok](https://ngrok.com) creates a secure tunnel from the internet to your local machine.
+### 3. In-Call Features
 
-### Install ngrok
+| # | Tutorial | What it covers |
+|---|---|---|
+| 3.1 | [Text-to-Speech & Voices](./3.1-tts-voices/description.md) | `SAY` vs `PLAY`, voice catalog, SSML, stopping mid-playback |
+| 3.2 | [Detect Voicemail & Beeps (AMD)](./3.2-amd/description.md) | `amd` command with `onHuman` / `onMachine` / `onBeep` / `onUnknown` branches |
+| 3.3 | [Record Calls & Transcribe Audio](./3.3-recording-transcription/description.md) | `startRecording` to AWS / GCS / Azure, transcription, recording lifecycle events |
+| 3.4 | [Number Masking](./3.4-number-masking/description.md) | Bridge two PSTN legs through a Sinch number so neither party sees the other's real number |
+| 3.5 | [Track Call Status](./3.5-track-call-status/description.md) | Polling endpoints, webhook events, `callResult` / `callReason` reference |
 
-```bash
-# macOS (Homebrew)
-brew install ngrok/ngrok/ngrok
+### 4. AI, Voice Relay & Streaming
 
-# Linux
-curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc
-echo "deb https://ngrok-agent.s3.amazonaws.com buster main" | sudo tee /etc/apt/sources.list.d/ngrok.list
-sudo apt update && sudo apt install ngrok
-
-# Windows
-# Download from https://ngrok.com/download
-```
-
-### Authenticate
-
-```bash
-ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
-```
-
-### Expose your local server
-
-```bash
-# Expose HTTP port 3000 for webhook servers
-ngrok http 3000
-
-# Expose WebSocket port 8765 for the WebSocket agent tutorial
-ngrok http 8765
-```
-
-After running ngrok you'll see output like:
-
-```
-Forwarding  https://abc123.ngrok-free.app -> http://localhost:3000
-```
-
-- For **webhook servers**: set `CALLBACK_URL=https://abc123.ngrok-free.app` and configure this URL in the Sinch Dashboard under your service's Call Behavior → Webhook URL.
-- For **WebSocket servers**: convert `https://` → `wss://` → `WS_ENDPOINT=wss://abc123.ngrok-free.app`.
+| # | Tutorial | What it covers |
+|---|---|---|
+| 4.1 | [Connect an AI Chatbot (Voice Relay)](./4.1-voice-relay/description.md) | `VOICE_RELAY` destination + LangChain-backed WebSocket server (OpenAI / Claude / Gemini) |
+| 4.2 | [Stream Call Audio in Real-Time](./4.2-stream-audio/description.md) | `STREAM` destination, bidirectional PCM frames, headers and lifecycle |
+| 4.3 | [ElevenLabs Bridge](./4.3-elevenlabs-bridge/description.md) | Relay between Sinch `STREAM` and the ElevenLabs Conversational AI WebSocket |
+| 4.4 | [WebSocket Server Reference](./4.4-websocket-server/description.md) | Protocols, minimal echo servers, production checklist |
+| 4.5 | [AI IVR (Voice Relay + call patching)](./4.5-ai-ivr/description.md) | LLM classifies caller intent over Voice Relay, then `PATCH`es the live call to bridge in a human agent |
 
 ---
 
 ## Authentication
 
-All Sinch Voice API requests use **HTTP Basic Authentication**:
+All requests use HTTP Basic Auth — `KEY_ID` as username, `KEY_SECRET` as password.
 
-- **Username**: your `KEY_ID`
-- **Password**: your `KEY_SECRET`
-
-The credentials are base64-encoded and sent in the `Authorization: Basic <base64(KEY_ID:KEY_SECRET)>` header.
-
-In curl:
 ```bash
 curl -u "$KEY_ID:$KEY_SECRET" https://voice.api.sinch.com/v2/projects/$PROJECT_ID/calls
 ```
 
-In Python:
-```python
-requests.post(url, auth=(key_id, key_secret))
-```
-
-In Node.js:
-```js
-const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret}`).toString("base64");
-fetch(url, { headers: { Authorization: authHeader } });
-```
+OAuth 2.0 Client Credentials is also supported.
 
 ---
 
-## Tutorial File Map
+## Environment Variables
 
-```
-sinch-voice-tutorials/
-├── README.md                         ← this file
-├── .env.example                      ← copy to .env and fill in credentials
-├── 01-tts-callout/
-│   ├── description.md
-│   └── scripts/
-│       ├── callout.sh                curl
-│       ├── callout.js                Browser fetch
-│       ├── callout.node.js           Node.js fetch
-│       ├── callout.py                Python requests
-│       ├── callout.php               PHP curl
-│       └── callout.java              Java HttpClient
-├── 02-number-masking/
-│   ├── description.md
-│   └── scripts/
-│       ├── server.node.js            Express.js webhook server
-│       ├── server.py                 Flask webhook server
-│       ├── server.php                Slim PHP webhook server
-│       ├── Server.java               Spring Boot webhook server
-│       ├── test-call.sh              curl programmatic bridge call
-│       └── test-call.js              Browser JS bridge call
-├── 03-websocket-agent/
-│   ├── description.md
-│   └── scripts/
-│       ├── ws-server.node.js         Node.js WebSocket server (ws)
-│       ├── ws-server.py              Python WebSocket server (websockets)
-│       ├── ws-server.php             PHP WebSocket server (Ratchet)
-│       ├── WsServer.java             Java WebSocket server (Tyrus)
-│       ├── ice-callback.node.js      Express.js ICE callback → STREAM SVAML
-│       ├── ice-callback.py           Flask ICE callback → STREAM SVAML
-│       ├── trigger-call.sh           curl outbound call → stream
-│       └── trigger-call.js           Browser JS outbound call → stream
-├── 04-recording-transcription/
-│   ├── description.md
-│   └── scripts/
-│       ├── server.node.js            Express.js webhook server with startRecording
-│       ├── server.py                 Flask webhook server with startRecording
-│       ├── server.php                Slim PHP webhook server with startRecording
-│       ├── Server.java               Spring Boot webhook server with startRecording
-│       ├── trigger-call.sh           curl outbound call with inline recording
-│       └── trigger-call.js           Browser JS outbound call with inline recording
-└── 05-amd/
-    ├── description.md
-    └── scripts/
-        ├── amd-callout.sh            curl AMD callout
-        ├── amd-callout.js            Browser JS AMD callout
-        ├── amd-callout.node.js       Node.js AMD callout
-        ├── amd-callout.py            Python AMD callout
-        ├── amd-callout.php           PHP AMD callout
-        ├── amd-callout.java          Java AMD callout
-        ├── callback-server.node.js   Express.js AMD webhook server
-        └── callback-server.py        Flask AMD webhook server
-```
+| Variable | Used by | Description |
+|---|---|---|
+| `PROJECT_ID` | all | Sinch project UUID |
+| `KEY_ID` | all | API key ID (Basic Auth username) |
+| `KEY_SECRET` | all | API key secret (Basic Auth password) |
+| `SINCH_NUMBER` | all | Your Sinch virtual number in E.164 format |
+| `DESTINATION_NUMBER` | outbound tutorials | Phone number to dial |
+| `SERVICE_ID` | 2.1, 2.2, 4.1, 4.5 | Voice service to configure via PATCH |
+| `CALLBACK_URL` | 2.1, 2.2, 3.3, 3.4 | Public webhook URL (e.g. from ngrok) |
+| `WS_ENDPOINT` | 4.x | WebSocket endpoint URL (e.g. `wss://abc.ngrok-free.app`) |
+| `STORAGE_DESTINATION_URL` | 3.3 | Cloud storage path (e.g. `s3://my-bucket/recordings/`) |
+| `STORAGE_CREDENTIALS` | 3.3 | Storage credentials (`ACCESS_KEY:SECRET:REGION` for AWS) |
+| `AGENT_NUMBERS` | 1.3 | Comma-separated agent E.164 list for hunting |
+| `MAX_CPS`, `TTL_SECONDS` | 1.2 | Batch pacing options |
+| `PRIMARY_NUMBER`, `FALLBACK_NUMBER` | 2.2 | Forwarding targets |
+| `BUSINESS_START_HOUR_UTC`, `BUSINESS_END_HOUR_UTC` | 2.2 | Time-of-day forwarding window (UTC) |
+| `SALES_NUMBER`, `SUPPORT_NUMBER` | 4.5 | Human-agent queues the AI IVR can patch into |
+| `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | 4.5 | Any OpenAI-compatible `/chat/completions` endpoint |
 
 ---
 
-## Links
+## File Map
 
-- [Sinch Dashboard](https://dashboard.sinch.com) — manage projects, numbers, and API keys
-- [Sinch Voice API Documentation](https://developers.sinch.com/docs/voice/)
-- [Sinch Voice API Reference (OpenAPI)](https://developers.sinch.com/docs/voice/api-reference/)
-- [SVAML Command Reference](https://developers.sinch.com/docs/voice/api-reference/svaml)
-- [Sinch Support](https://support.sinch.com)
+```
+tutorials/
+├── README.md
+├── .env.example
+├── 1.1-outbound-call/          description.md
+├── 1.2-call-pacing/            description.md
+├── 1.3-call-hunting/           description.md
+├── 2.1-inbound-pstn/           description.md
+├── 2.2-call-forwarding/        description.md
+├── 3.1-tts-voices/             description.md
+├── 3.2-amd/                    description.md
+├── 3.3-recording-transcription/ description.md
+├── 3.4-number-masking/         description.md
+├── 3.5-track-call-status/      description.md
+├── 4.1-voice-relay/            description.md  server.py  system_prompt.md  requirements.txt
+├── 4.2-stream-audio/           description.md  scripts/{ws-server,ice-callback,trigger-call}.{node,py,sh,php,java}
+├── 4.3-elevenlabs-bridge/      description.md  bridge.py  stream.py  requirements.txt
+├── 4.4-websocket-server/       description.md  scripts/ws-{stream,relay}-server.{node,py}
+└── 4.5-ai-ivr/                 description.md  scripts/relay-server.{py,node.js,php}
+                                                scripts/{configure-service,test-callout,patch-call}.sh
+                                                system_prompt.md  requirements.txt
+```

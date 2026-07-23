@@ -1,0 +1,40 @@
+{
+  "callName": "caller",
+  "commands": [
+    {
+      "command": "answer"
+    },
+    {
+      "command": "bridgeCall",
+      "bridgeName": "main-bridge"
+    },
+    {
+      "command": "dial",
+      "callName": "voice_relay_call",
+      "to": {
+        "type": "VOICE_RELAY",
+        "voiceRelay": {
+          "endpoint": "wss://f2c7-213-114-236-124.ngrok-free.app",
+          "ttsVoice": "Tiffany",
+          "sttLanguage": "en-US"
+        }
+      },
+      "events": {
+        "onAnswer": [
+          {
+            "command": "bridgeCall",
+            "bridgeName": "main-bridge"
+          }
+        ]
+      }
+    }
+  ],
+  "events": {
+    "onHangup": [
+      {
+        "command": "hangup",
+        "callName": "voice_relay_call"
+      }
+    ]
+  }
+}
