@@ -73,15 +73,15 @@ curl -s -X POST \
   "https://voice.api.sinch.com/v2/projects/$PROJECT_ID/svaml/validate" \
   -H "Content-Type: application/json" \
   -d '{
-    "svaml": [
-      { "command": "answer" },
-      { "command": "bridgeCall", "bridgeName": "main-bridge" },
-      { "command": "dial",
-        "callName": "callee",
-        "from": { "type": "PHONE", "phone": { "number": "'"$SINCH_NUMBER"'" } },
-        "to":   { "type": "PHONE", "phone": { "number": "'"$DESTINATION_NUMBER"'" } },
-        "dialTimeoutDurationSeconds": 30 }
-    ]
+      "svaml": {"commands":[
+        { "command": "answer" },
+        { "command": "bridgeCall", "bridgeName": "main-bridge" },
+        { "command": "dial",
+          "callName": "callee",
+          "from": { "type": "PHONE", "phone": { "number": "' "$SINCH_NUMBER" '" } },
+          "to":   { "type": "PHONE", "phone": { "number": "' "$DESTINATION_NUMBER" '" } },
+          "dialTimeoutDurationSeconds": 30 }
+      ]}
   }'
 ```
 
@@ -770,4 +770,4 @@ The `POST /calls` body is a `callRequest`: a top-level `commands` array (the sam
 - `hangup` accepts a `callName` to drop a specific named leg while keeping the session and other legs alive.
 - `POST /v2/projects/{projectId}/calls` takes a `callRequest` (top-level `commands`) and returns `{ projectId, serviceId, sessionId }` on `201`.
 - `PATCH /v2/projects/{projectId}/services/{serviceId}` (`updateService`) sets `callBehavior` (`NONE` | `WEBHOOK` | `STATIC`).
-- `POST /v2/projects/{projectId}/svaml/validate` validates a SVAML payload (`{ "svaml": [ ...commands ] }`) → `{ "isValid", "errors" }`.
+- `POST /v2/projects/{projectId}/svaml/validate` validates a SVAML payload (`{ "svaml": {"commands":[ ...commands ]} }`) → `{ "isValid", "errors" }`.

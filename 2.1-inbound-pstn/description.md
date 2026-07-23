@@ -69,13 +69,13 @@ curl -s -X POST \
   "https://voice.api.sinch.com/v2/projects/$PROJECT_ID/svaml/validate" \
   -H "Content-Type: application/json" \
   -d '{
-    "svaml": [
-      { "command": "answer" },
-      { "command": "messages",
-        "messages": [
-          { "type": "SAY", "say": { "text": "Welcome to Acme.", "voiceName": "Emma" } }
-        ] }
-    ]
+          "svaml": {"commands":[
+            { "command": "answer" },
+            { "command": "messages",
+              "messages": [
+                { "type": "SAY", "say": { "text": "Welcome to Acme.", "voiceName": "Emma" } }
+              ] }
+          ]}
   }'
 ```
 
@@ -88,14 +88,23 @@ import requests
 resp = requests.post(
     f"https://voice.api.sinch.com/v2/projects/{os.environ['PROJECT_ID']}/svaml/validate",
     auth=(os.environ["KEY_ID"], os.environ["KEY_SECRET"]),
-    json={
-        "svaml": [
-            {"command": "answer"},
-            {"command": "messages",
-             "messages": [
-                 {"type": "SAY", "say": {"text": "Welcome to Acme.", "voiceName": "Emma"}}
-             ]},
+    json = {
+      "svaml": {
+        "commands": [{
+            "command": "answer"
+          }, {
+            "command": "messages",
+            "messages": [{
+                "type": "SAY",
+                "say": {
+                  "text": "Welcome to Acme.",
+                  "voiceName": "Emma"
+                }
+              }
+            ]
+          },
         ]
+      }
     },
 )
 print(resp.status_code, resp.json())
@@ -112,20 +121,20 @@ const resp = await fetch(
     method: "POST",
     headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      svaml: [
+      svaml: {commands: [
         { command: "answer" },
         { command: "messages",
           messages: [
             { type: "SAY", say: { text: "Welcome to Acme.", voiceName: "Emma" } },
           ] },
-      ],
+      ] },
     }),
   }
 );
 console.log(resp.status, await resp.json());
 ```
 
-Expected: `{"isValid":true}`. A `200` here means validation *ran*, not that the payload passed; always read `isValid`. Note `/svaml/validate` takes only the `commands` array (passed as `svaml`), not the full webhook response wrapper.
+Expected: `{"isValid":true}`. A `200` here means validation *ran*, not that the payload passed; always read `isValid`. 
 
 ---
 
@@ -675,7 +684,7 @@ After `call.incoming` you'll typically receive (for the outbound agent leg you d
 ## What the OpenAPI spec says - at a glance
 
 - `PATCH /v2/projects/{projectId}/services/{serviceId}` (`updateService`) sets `callBehavior`, one of `NONE`, `WEBHOOK`, `STATIC`.
-- `POST /v2/projects/{projectId}/svaml/validate` validates a SVAML payload (`{ "svaml": [ ...commands ] }`) and returns `{ "isValid", "errors" }`.
+- `POST /v2/projects/{projectId}/svaml/validate` validates a SVAML payload (`{ "svaml": {"commands":[ ...commands ]} }`) and returns `{ "isValid", "errors" }`.
 - The incoming webhook is delivered with CloudEvents `ce-*` headers plus a JSON body containing `event` + `call` (`webhookRequest`).
 - The response (`webhookResponse`) is `{ "commands": [...], "callName"?, "events"?: { "onHangup": [...] } }`. Commands run directly, no wrapper command. `callName` and `events` are honored only in responses to `call.incoming`.
 - Authentication is HTTP Basic with your `KEY_ID` / `KEY_SECRET`.
