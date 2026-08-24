@@ -102,7 +102,7 @@ resp = requests.post(
                 }
               }
             ]
-          },
+          }
         ]
       }
     },
@@ -125,10 +125,10 @@ const resp = await fetch(
         { command: "answer" },
         { command: "messages",
           messages: [
-            { type: "SAY", say: { text: "Welcome to Acme.", voiceName: "Emma" } },
-          ] },
-      ] },
-    }),
+            { type: "SAY", say: { text: "Welcome to Acme.", voiceName: "Emma" } }
+          ] }
+      ] }
+    })
   }
 );
 console.log(resp.status, await resp.json());
@@ -143,7 +143,7 @@ Expected: `{"isValid":true}`. A `200` here means validation *ran*, not that the 
 All three servers behave identically. They read `SINCH_NUMBER` and `DESTINATION_NUMBER` from the environment (the variables you exported above), exit with an error if either is missing, and listen on `PORT` (default `3000`) at `POST /voice/events`:
 
 - On **`call.incoming`**: answer, play a greeting, then dial `DESTINATION_NUMBER` and bridge the two legs.
-- On **any other event**: acknowledge with `200` and `{"commands": []}` (take no action).
+- On **any other event**: acknowledge with `200` and `{"commands": []}`.
 
 **bash** (`server.sh`)
 
@@ -183,6 +183,7 @@ if [ "${1:-}" = "--handle" ]; then
 
   if [ "$event" = "call.incoming" ]; then
     response=$(jq -n --arg sinch "$SINCH_NUMBER" --arg dest "$DESTINATION_NUMBER" '{
+	  callName: "incoming",
       commands: [
         { command: "answer" },
         { command: "messages", messagesName: "greeting",
@@ -198,19 +199,11 @@ if [ "${1:-}" = "--handle" ]; then
           dialTimeoutDurationSeconds: 30,
           events: {
             onAnswer:  [ { command: "bridgeCall", bridgeName: "inbound-bridge" } ],
-            onHangup:  [ { command: "hangup" } ],
-            onTimeout: [
-              { command: "messages", messagesName: "noanswer",
-                messages: [
-                  { type: "SAY",
-                    say: { text: "We are sorry, our agents are unavailable. Goodbye.",
-                           voiceName: "Emma" } }
-                ],
-                events: { onFinish: [ { command: "hangup" } ] } }
-            ]
+            onHangup:  [ { command: "hangup" , callName: "incoming" } ],
+            onTimeout: [ { command: "hangup" , callName: "incoming" } ]
           } }
       ],
-      events: { onHangup: [ { command: "hangup" } ] }
+      events: { onHangup: [ { command: "hangup" ,callName: "agent"} ] }
     }')
   else
     response='{"commands":[]}'
@@ -271,6 +264,7 @@ def voice_events():
 
     if event == "call.incoming":
         return jsonify({
+		    "callName": "incoming",
             "commands": [
                 {"command": "answer"},
                 {
@@ -291,21 +285,12 @@ def voice_events():
                     "dialTimeoutDurationSeconds": 30,
                     "events": {
                         "onAnswer":  [{"command": "bridgeCall", "bridgeName": "inbound-bridge"}],
-                        "onHangup":  [{"command": "hangup"}],
-                        "onTimeout": [
-                            {"command": "messages",
-                             "messagesName": "noanswer",
-                             "messages": [
-                                 {"type": "SAY",
-                                  "say": {"text": "We are sorry, our agents are unavailable. Goodbye.",
-                                          "voiceName": "Emma"}}
-                             ],
-                             "events": {"onFinish": [{"command": "hangup"}]}}
-                        ],
+                        "onHangup":  [{"command": "hangup" ,"callName": "incoming"}],
+                        "onTimeout": [{"command": "hangup" ,"callName": "incoming"}],
                     },
                 },
             ],
-            "events": {"onHangup": [{"command": "hangup"}]},
+            "events": {"onHangup": [{"command": "hangup", "callName": "agent"}]},
         })
 
     return jsonify({"commands": []})
@@ -347,6 +332,7 @@ app.post("/voice/events", (req, res) => {
 
   if (event === "call.incoming") {
     return res.status(200).json({
+	  callName: "incoming",
       commands: [
         { command: "answer" },
         {
@@ -368,23 +354,12 @@ app.post("/voice/events", (req, res) => {
           dialTimeoutDurationSeconds: 30,
           events: {
             onAnswer: [{ command: "bridgeCall", bridgeName: "inbound-bridge" }],
-            onHangup: [{ command: "hangup" }],
-            onTimeout: [
-              {
-                command: "messages",
-                messagesName: "noanswer",
-                messages: [
-                  { type: "SAY",
-                    say: { text: "We are sorry, our agents are unavailable. Goodbye.",
-                           voiceName: "Emma" } },
-                ],
-                events: { onFinish: [{ command: "hangup" }] },
-              },
-            ],
+            onHangup: [{ command: "hangup", callName: "incoming" }],
+            onTimeout:[{ command: "hangup", callName: "incoming" }]
           },
         },
       ],
-      events: { onHangup: [{ command: "hangup" }] },
+      events: { onHangup: [{ command: "hangup", callName: "agent" }] },
     });
   }
 
@@ -588,59 +563,10 @@ The body has two top-level fields: `event` (the event name) and `call` (the call
 
 `ce-id` is a unique per-event UUID; combined with `ce-source` it identifies a single delivery. The example servers don't validate headers, but production code should (see the checklist).
 
----
-
-## Reference: the webhook response (SVAML)
-
-For a `call.incoming` event, return SVAML commands **directly at the top level**; there is no wrapper command. Start with `answer`, then add the call flow. Optional top-level `callName` and `events` are honored **only** in responses to `call.incoming`; in responses to other events they're ignored.
-
-```json
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  "commands": [
-    { "command": "answer" },
-    {
-      "command": "messages",
-      "messagesName": "greeting",
-      "messages": [
-        { "type": "SAY",
-          "say": { "text": "Welcome to Acme. Please hold while we connect you.",
-                   "voiceName": "Emma" } }
-      ]
-    },
-    { "command": "bridgeCall", "bridgeName": "inbound-bridge" },
-    {
-      "command": "dial",
-      "callName": "agent",
-      "from": { "type": "PHONE", "phone": { "number": "+1SINCH_NUMBER" } },
-      "to":   { "type": "PHONE", "phone": { "number": "+1AGENT_NUMBER" } },
-      "dialTimeoutDurationSeconds": 30,
-      "events": {
-        "onAnswer": [ { "command": "bridgeCall", "bridgeName": "inbound-bridge" } ],
-        "onHangup": [ { "command": "hangup" } ],
-        "onTimeout": [
-          { "command": "messages", "messagesName": "noanswer",
-            "messages": [ { "type": "SAY",
-              "say": { "text": "Our agents are unavailable. Goodbye.", "voiceName": "Emma" } } ],
-            "events": { "onFinish": [ { "command": "hangup" } ] } }
-        ]
-      }
-    }
-  ],
-  "events": {
-    "onHangup": [ { "command": "hangup" } ]
-  }
-}
-```
-
 Things to know:
 
 - `commands` is a normal SVAML sequence, the same primitives as any outbound flow.
 - The inbound leg is answered explicitly with `answer`; `bridgeCall` creates the named bridge on first use and the agent leg joins the same bridge in its `onAnswer`.
-- Returning `{"commands": []}` is valid and means "take no action."
-- Top-level `events.onHangup` runs cleanup when the call ends.
 
 ## Reference: subsequent events
 

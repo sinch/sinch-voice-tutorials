@@ -1,143 +1,139 @@
-# Detect Voicemail & Beeps (AMD)
+# Record Calls & Transcribe Audio
 
 ## Overview
 
-Answering Machine Detection (AMD) lets you automatically distinguish between a live human and a voicemail machine, IVR, or beep when making outbound calls. The Voice API v2 runs AMD analysis on the call audio after the call is answered, then executes a **different branch of SVAML commands** depending on the result: `onHuman`, `onMachine`, `onBeep`, or `onUnknown`. You can wire a completely different call flow for each outcome, for example connect a human to a live agent, leave a voicemail when a beep is detected, or hang up silently on a machine.
+The Voice API v2 can record a call and upload the audio file directly to your own cloud storage bucket (AWS S3, Google Cloud Storage, or Azure Blob Storage) as soon as the recording stops. Optionally it can also transcribe the recording to text and deliver a transcript file alongside the audio. Recording is controlled by the `startRecording` and `stopRecording` SVAML commands, which you can include inline in an outbound call payload or return from a webhook for inbound calls.
 
-AMD is controlled by the `amd` SVAML command, which you place inline in the call payload or return from a webhook. The command is **non-blocking**: the rest of your sequence keeps executing while detection runs in parallel, and the matching AMD branch fires as soon as a verdict is reached.
+You specify the destination provider, the storage credentials, the recording format (`MP3` or `WAV`), the recording direction (`COMBINED` / `INBOUND` / `OUTBOUND`), and whether transcription is enabled.
 
-There are two ways to observe a result:
-
-- **The AMD branch runs on the call itself.** Whatever commands you put under `onHuman` / `onBeep` / etc. execute on the live call, so the human hears your greeting and the voicemail gets your message. This is audible on the answering phone with **no backend required**.
-- **AMD result webhook events.** If your call runs on a service with a webhook URL, Sinch additionally POSTs a `call.amd.human` / `call.amd.machine` / `call.amd.beep` / `call.amd.unknown` event to that URL. This is how you get a **visible log** in your own server of which branch fired (see [3.6 Track Call Status](../3.6-track-call-status/description.md) for consuming call events).
-
-> The fastest path to a first success is the **inline callout** below: place the call, answer it, and hear the AMD branch run. Add the callback server later when you want server-side visibility or dynamic per-call AMD configuration.
+> **Heads-up: recording needs storage configured before anything works.** Unlike most tutorials in this series, you cannot see a useful result until a real bucket and credentials exist, because Sinch uploads straight to your storage. Budget 10 to 15 minutes for the AWS setup in [Setup](#setup) before you run anything. Once that is done, the first-success path below is a single script.
 
 ## Real-life examples
 
-- **Outreach campaigns**: leave a tailored voicemail only when a beep is detected, and connect a live answer to an agent.
-- **Appointment reminders**: connect to a live agent when a human answers, leave a reminder message on voicemail systems.
-- **Debt collection**: route live answers to a specialist, leave a callback number on answering machines.
-- **Survey calls**: launch the survey IVR only when a real human is detected, abort silently on machine answers.
+- **Compliance and quality assurance**: Record all customer service calls and store them in S3 for regulatory review.
+- **Sales coaching**: Record sales calls, transcribe them, and feed the transcripts into an AI coaching tool.
+- **Dispute resolution**: Maintain an auditable record of conversations for insurance claims or legal disputes.
+- **Inbound-only recording**: Capture only the caller's audio (consent reasons) by setting `recordingType: INBOUND`.
 
-## Setup (do this first)
+## Setup
 
-All scripts read their configuration from environment variables. **Export** them in the shell you will run from:
+This tutorial reads its configuration from environment variables. Export them in the shell session you will run the examples from. Exports last for the current shell only, so re-export them (or add them to your shell profile) if you open a new terminal.
+
+### 1. Sinch credentials
+
+You need a [Sinch account](https://dashboard.sinch.com), a Voice-enabled virtual number, and an API key. Export them:
 
 ```bash
-export PROJECT_ID=...            # from https://dashboard.sinch.com
-export KEY_ID=...
-export KEY_SECRET=...
-export SINCH_NUMBER=+1...        # your Sinch virtual number (E.164)
-export DESTINATION_NUMBER=+1...  # the number to call (E.164)
-
-# Only needed for the callback-server path:
-export CALLBACK_URL=...          # your public ngrok URL
-export PORT=3000
+export PROJECT_ID=your-project-id
+export KEY_ID=your-key-id
+export KEY_SECRET=your-key-secret
+export SINCH_NUMBER=+1XXXXXXXXXX          # your Sinch virtual number, E.164
+export DESTINATION_NUMBER=+1YYYYYYYYYY    # the number to call (for the outbound trigger)
 ```
 
-Notes:
+Auth to the Voice API is **HTTP Basic** with `KEY_ID:KEY_SECRET`.
 
-- Auth is **HTTP Basic** using `KEY_ID:KEY_SECRET`.
-- These variables live only in the current shell. Open a new terminal and you will need to export them again (or add them to your shell profile).
-- For the callback-server path you also need a public URL. Install [ngrok](https://ngrok.com) and a runtime (Node 18+, or Python 3.8+ with `flask`).
+### 2. Storage bucket + credentials (the part that takes the most time)
 
-## First success: inline AMD callout (no backend)
+Recording uploads go to **your** bucket, so you must create one and a write-scoped credential. AWS S3 is the recommended/headline path for this tutorial. It is the spec default (`destination: AWS`) and has the simplest credential format. GCS and Azure are covered under [Other storage providers](#other-storage-providers).
 
-This places an outbound call and runs AMD on it. The matching branch executes on the call, so you observe the result **by answering the phone**.
+**AWS S3 (recommended):**
 
-Pick a language below, paste the script, export your variables, and run it.
+1. Create an S3 bucket, e.g. `my-voice-recordings`, in a region you control (e.g. `eu-central-1`).
+2. Create an IAM user with programmatic access and a policy granting at least `s3:PutObject` on `arn:aws:s3:::my-voice-recordings/*`. Grant the minimum, and do not attach full S3 access.
+3. Copy the **Access key ID** and **Secret access key**.
 
-What happens:
+Then export both storage variables:
 
-- The script POSTs the full SVAML (including all four AMD branches) to `POST /v2/projects/{projectId}/calls` and prints `AMD call created successfully` with the returned `callId` on **HTTP 201**.
-- Your `DESTINATION_NUMBER` rings. Depending on how it is answered:
-  - **A person answers**, AMD resolves to human, the `onHuman` branch plays *"Hello! This is a call from Acme Corp..."* then hangs up.
-  - **Voicemail picks up**, AMD waits for the beep, and on the tone the `onBeep` branch plays *"Hi, this is Acme Corp calling about your recent inquiry..."* then hangs up.
-  - **Machine greeting, no beep yet**, `onMachine` hangs up silently.
-  - **Inconclusive**, `onUnknown` hangs up.
+```bash
+export STORAGE_DESTINATION_URL=s3://my-voice-recordings/recordings/
+export STORAGE_CREDENTIALS=AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY:eu-central-1
+```
 
-> Visibility note: the script's terminal output only confirms the call was **created** (HTTP 201). It does **not** print which AMD branch fired, because that verdict lives on the call. To see the branch in your terminal, run the callback-server path further down and watch for `call.amd.*` events.
+The credential format for AWS is exactly **`ACCESS_KEY:SECRET_KEY:REGION`**, three colon-separated fields. This is the same format the spec uses in its `recordingOptions` example (`accessKeyId:secretAccessKey:eu-central-1`). The examples in this tutorial **infer the provider from the URL scheme**: `s3://` maps to `AWS`, `gs://` maps to `GCP`, anything else maps to `AZURE`. So set `STORAGE_DESTINATION_URL` to match your provider and the `destination` field is filled in for you.
 
-### Bash (curl)
+### 3. (Inbound only) a public callback URL
+
+The outbound trigger does **not** need a public URL. The webhook servers do, because Sinch must reach them. Expose your local server with ngrok and export:
+
+```bash
+export CALLBACK_URL=https://your-ngrok-url.ngrok-free.app
+export PORT=8081
+```
+
+Configure the `CALLBACK_URL` as your service's webhook in the Sinch dashboard. See [2.1 Handle Inbound PSTN Calls](../2.1-inbound-pstn/description.md) for the full inbound webhook contract (CloudEvents headers, body shape, signature verification).
+
+## First success: record one outbound call (fastest path)
+
+Once you have exported the Sinch credentials, `SINCH_NUMBER`, `DESTINATION_NUMBER`, `STORAGE_DESTINATION_URL`, and `STORAGE_CREDENTIALS`, save the script below as `trigger-call.sh` and run `bash trigger-call.sh`:
 
 ```bash
 #!/bin/bash
-# Sinch AMD Callout: outbound call with Answering Machine Detection (AMD).
-# AMD detects human vs. machine and fires different SVAML for each outcome.
-# Reads credentials from exported environment variables (see Setup).
+# Sinch Recording & Transcription: trigger an outbound call with inline recording SVAML.
+# The call is recorded immediately when answered; the file is uploaded to cloud storage.
 
 set -e
 
-: "${PROJECT_ID:?ERROR: PROJECT_ID is not set. Export it first.}"
+: "${PROJECT_ID:?ERROR: PROJECT_ID is not set.}"
 : "${KEY_ID:?ERROR: KEY_ID is not set.}"
 : "${KEY_SECRET:?ERROR: KEY_SECRET is not set.}"
 : "${SINCH_NUMBER:?ERROR: SINCH_NUMBER is not set.}"
 : "${DESTINATION_NUMBER:?ERROR: DESTINATION_NUMBER is not set.}"
+: "${STORAGE_DESTINATION_URL:?ERROR: STORAGE_DESTINATION_URL is not set (e.g. s3://my-bucket/recordings/).}"
+: "${STORAGE_CREDENTIALS:?ERROR: STORAGE_CREDENTIALS is not set (e.g. ACCESS_KEY:SECRET:REGION).}"
+
+# Detect storage provider from the destination URL prefix
+if echo "${STORAGE_DESTINATION_URL}" | grep -q "^s3://"; then
+  STORAGE_DESTINATION="AWS"
+elif echo "${STORAGE_DESTINATION_URL}" | grep -q "^gs://"; then
+  STORAGE_DESTINATION="GCP"
+else
+  STORAGE_DESTINATION="AZURE"
+fi
 
 BASE_URL="https://voice.api.sinch.com/v2"
 
-echo "Placing AMD callout from ${SINCH_NUMBER} to ${DESTINATION_NUMBER} ..."
+echo "Calling ${DESTINATION_NUMBER} with recording enabled (${STORAGE_DESTINATION}) ..."
 
 BODY=$(printf '{
   "commands": [
     {
       "command": "dial",
-      "callName": "amd-call",
+      "callName": "recorded-call",
       "from": { "type": "PHONE", "phone": { "number": "%s" } },
       "to":   { "type": "PHONE", "phone": { "number": "%s" } },
-      "dialTimeoutDurationSeconds": 45,
-      "maxCallDurationSeconds": 300,
+      "dialTimeoutDurationSeconds": 30,
+      "maxCallDurationSeconds": 3600,
       "events": {
         "onAnswer": [
           {
-            "command": "amd",
-            "events": {
-              "onHuman": [
-                {
-                  "command": "messages",
-                  "messagesName": "human-greeting",
-                  "messages": [
-                    {
-                      "type": "SAY",
-                      "say": {
-                        "text": "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                        "voiceName": "Emma"
-                      }
-                    }
-                  ],
-                  "events": { "onFinish": [{ "command": "hangup" }] }
-                }
-              ],
-              "onMachine": [
-                { "command": "hangup" }
-              ],
-              "onBeep": [
-                {
-                  "command": "messages",
-                  "messagesName": "voicemail-message",
-                  "messages": [
-                    {
-                      "type": "SAY",
-                      "say": {
-                        "text": "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                        "voiceName": "Emma"
-                      }
-                    }
-                  ],
-                  "events": { "onFinish": [{ "command": "hangup" }] }
-                }
-              ],
-              "onUnknown": [
-                { "command": "hangup" }
-              ]
+            "command": "startRecording",
+            "recordingName": "main-recording",
+            "recordingOptions": {
+              "format": "MP3",
+              "recordingType": "COMBINED",
+              "destination": "%s",
+              "destinationUrl": "%s",
+              "credentials": "%s",
+              "transcriptionOptions": { "isEnabled": true, "locale": "en-US" }
             }
+          },
+          {
+            "command": "messages",
+            "messagesName": "recording-notice",
+            "messages": [
+              { "type": "SAY", "say": { "text": "This call is being recorded.", "voiceName": "Emma" } }
+            ]
           }
+        ],
+        "onHangup": [
+          { "command": "stopRecording", "recordingName": "main-recording" }
         ]
       }
     }
   ]
-}' "${SINCH_NUMBER}" "${DESTINATION_NUMBER}")
+}' "${SINCH_NUMBER}" "${DESTINATION_NUMBER}" \
+   "${STORAGE_DESTINATION}" "${STORAGE_DESTINATION_URL}" "${STORAGE_CREDENTIALS}")
 
 RESPONSE=$(curl -s -w "\n%{http_code}" \
   -X POST \
@@ -150,8 +146,10 @@ HTTP_BODY=$(echo "${RESPONSE}" | head -n -1)
 HTTP_CODE=$(echo "${RESPONSE}" | tail -n 1)
 
 if [ "${HTTP_CODE}" -eq 201 ]; then
-  echo "AMD call created successfully (HTTP ${HTTP_CODE}):"
+  echo "Call created with recording (HTTP ${HTTP_CODE}):"
   echo "${HTTP_BODY}" | (command -v jq > /dev/null && jq '.' || cat)
+  echo ""
+  echo "Recording will be uploaded to: ${STORAGE_DESTINATION_URL}"
 else
   echo "ERROR: API returned HTTP ${HTTP_CODE}:" >&2
   echo "${HTTP_BODY}" >&2
@@ -159,495 +157,42 @@ else
 fi
 ```
 
-### Python
+This places an outbound call to `DESTINATION_NUMBER`. The moment it is answered:
 
-Requires `pip install requests`.
+1. `startRecording` begins recording (combined audio, MP3, transcription on).
+2. A short "This call is being recorded." message plays.
+3. When the call ends, `stopRecording` finalizes the recording and Sinch uploads it.
 
-```python
-# Sinch AMD Callout: outbound call with Answering Machine Detection (AMD).
-# AMD detects human vs. machine and executes different SVAML for each outcome.
-# Reads credentials from exported environment variables (see Setup).
-# Requirements: pip install requests
+**What success looks like:**
 
-import os
-import sys
-import json
-import requests
+- The API returns **HTTP 201** with a call/session id (printed by the script).
+- A few seconds after you hang up, an `.mp3` file appears in `s3://my-voice-recordings/recordings/`. The filename includes the call/session identifier for traceability.
+- Because transcription is enabled, a JSON transcript file lands alongside the audio.
 
-project_id         = os.environ.get("PROJECT_ID")
-key_id             = os.environ.get("KEY_ID")
-key_secret         = os.environ.get("KEY_SECRET")
-sinch_number       = os.environ.get("SINCH_NUMBER")
-destination_number = os.environ.get("DESTINATION_NUMBER")
+If nothing shows up in the bucket, the credentials or bucket permissions are almost certainly wrong. Recording failures are **silent by default**, so wire `events.onFailure` (see [Recording lifecycle events](#recording-lifecycle-events)) so a misconfigured bucket surfaces instead of being swallowed.
 
-for var, name in [
-    (project_id, "PROJECT_ID"), (key_id, "KEY_ID"), (key_secret, "KEY_SECRET"),
-    (sinch_number, "SINCH_NUMBER"), (destination_number, "DESTINATION_NUMBER"),
-]:
-    if not var:
-        print(f"ERROR: {name} is not set. Export it first.", file=sys.stderr)
-        sys.exit(1)
+### Browser trigger (quick local testing only)
 
-url = f"https://voice.api.sinch.com/v2/projects/{project_id}/calls"
-
-# The `amd` command must be placed in the `onAnswer` event of a `dial` command.
-# It fires different SVAML commands based on what AMD detects.
-payload = {
-    "commands": [
-        {
-            "command": "dial",
-            "callName": "amd-call",
-            "from": {"type": "PHONE", "phone": {"number": sinch_number}},
-            "to":   {"type": "PHONE", "phone": {"number": destination_number}},
-            "dialTimeoutDurationSeconds": 45,
-            "maxCallDurationSeconds": 300,
-            "events": {
-                "onAnswer": [
-                    {
-                        "command": "amd",
-                        "events": {
-                            # Human picked up: play a personalized greeting
-                            "onHuman": [
-                                {
-                                    "command": "messages",
-                                    "messagesName": "human-greeting",
-                                    "messages": [
-                                        {
-                                            "type": "SAY",
-                                            "say": {
-                                                "text": "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                                                "voiceName": "Emma"
-                                            }
-                                        }
-                                    ],
-                                    "events": {
-                                        "onFinish": [{"command": "hangup"}]
-                                    }
-                                }
-                            ],
-                            # Machine greeting detected (beep not yet heard): just hang up
-                            "onMachine": [
-                                {"command": "hangup"}
-                            ],
-                            # Beep detected: leave a voicemail message right now
-                            "onBeep": [
-                                {
-                                    "command": "messages",
-                                    "messagesName": "voicemail-message",
-                                    "messages": [
-                                        {
-                                            "type": "SAY",
-                                            "say": {
-                                                "text": "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                                                "voiceName": "Emma"
-                                            }
-                                        }
-                                    ],
-                                    "events": {
-                                        "onFinish": [{"command": "hangup"}]
-                                    }
-                                }
-                            ],
-                            # Unknown: hang up safely
-                            "onUnknown": [
-                                {"command": "hangup"}
-                            ]
-                        }
-                    }
-                ]
-            }
-        }
-    ]
-}
-
-print(f"Placing AMD callout from {sinch_number} to {destination_number} ...")
-
-try:
-    response = requests.post(url, json=payload, auth=(key_id, key_secret))
-    data = response.json()
-
-    if response.status_code == 201:
-        print("AMD call created successfully:")
-        print(json.dumps(data, indent=2))
-    else:
-        print(f"ERROR {response.status_code}:", file=sys.stderr)
-        print(json.dumps(data, indent=2), file=sys.stderr)
-        sys.exit(1)
-
-except requests.RequestException as e:
-    print(f"Request failed: {e}", file=sys.stderr)
-    sys.exit(1)
-```
-
-### Node.js (native fetch, Node 18+)
-
-Save as `amd-callout.mjs` (or use `"type": "module"` in `package.json`) so top-level `await` works.
+The same flow can run from the browser console. Calling the Sinch API directly from a browser hits CORS and exposes your key secret, so this is for quick local testing only. In production, proxy through your backend.
 
 ```javascript
-// Sinch AMD Callout: Node.js (native fetch, Node 18+) outbound call with AMD.
-// Reads credentials from exported environment variables (see Setup).
-// Run: node amd-callout.mjs
+// Sinch Recording & Transcription: browser JS to trigger an outbound call with recording.
+// Note: calling the Sinch API directly from a browser will hit CORS restrictions,
+// and exposes your key secret. In production, proxy these calls through your backend.
 
-const projectId         = process.env.PROJECT_ID         || (() => { throw new Error("PROJECT_ID not set"); })();
-const keyId             = process.env.KEY_ID             || (() => { throw new Error("KEY_ID not set"); })();
-const keySecret         = process.env.KEY_SECRET         || (() => { throw new Error("KEY_SECRET not set"); })();
-const sinchNumber       = process.env.SINCH_NUMBER       || (() => { throw new Error("SINCH_NUMBER not set"); })();
-const destinationNumber = process.env.DESTINATION_NUMBER || (() => { throw new Error("DESTINATION_NUMBER not set"); })();
+(async function sinchRecordingCall() {
+  const projectId             = "YOUR_PROJECT_ID";
+  const keyId                 = "YOUR_KEY_ID";
+  const keySecret             = "YOUR_KEY_SECRET";
+  const sinchNumber           = "+1XXXXXXXXXX";
+  const destinationNumber     = "+1YYYYYYYYYY";
+  const storageDestinationUrl = "s3://my-bucket/recordings/";
+  const storageCredentials    = "ACCESS_KEY:SECRET_KEY:REGION";
 
-const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret}`).toString("base64");
-
-const payload = {
-  commands: [
-    {
-      command: "dial",
-      callName: "amd-call",
-      from: { type: "PHONE", phone: { number: sinchNumber } },
-      to:   { type: "PHONE", phone: { number: destinationNumber } },
-      dialTimeoutDurationSeconds: 45,
-      maxCallDurationSeconds: 300,
-      events: {
-        onAnswer: [
-          {
-            command: "amd",
-            events: {
-              // Human detected: greet and connect to an agent (or take further action)
-              onHuman: [
-                {
-                  command: "messages",
-                  messagesName: "human-greeting",
-                  messages: [
-                    {
-                      type: "SAY",
-                      say: {
-                        text: "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                        voiceName: "Emma"
-                      }
-                    }
-                  ],
-                  events: { onFinish: [{ command: "hangup" }] }
-                }
-              ],
-              // Machine detected (no beep yet): hang up silently
-              onMachine: [{ command: "hangup" }],
-              // Beep detected: play the voicemail message right after the beep
-              onBeep: [
-                {
-                  command: "messages",
-                  messagesName: "voicemail-message",
-                  messages: [
-                    {
-                      type: "SAY",
-                      say: {
-                        text: "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                        voiceName: "Emma"
-                      }
-                    }
-                  ],
-                  events: { onFinish: [{ command: "hangup" }] }
-                }
-              ],
-              // Unknown: safe default is to hang up
-              onUnknown: [{ command: "hangup" }]
-            }
-          }
-        ]
-      }
-    }
-  ]
-};
-
-console.log(`Placing AMD callout from ${sinchNumber} to ${destinationNumber} ...`);
-
-const response = await fetch(
-  `https://voice.api.sinch.com/v2/projects/${projectId}/calls`,
-  {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: authHeader
-    },
-    body: JSON.stringify(payload)
-  }
-);
-
-const data = await response.json();
-
-if (response.status === 201) {
-  console.log("AMD call created successfully:", JSON.stringify(data, null, 2));
-} else {
-  console.error(`ERROR ${response.status}:`, JSON.stringify(data, null, 2));
-  process.exit(1);
-}
-```
-
-### PHP
-
-Requires PHP 8+ with the curl extension. `getenv()` reads the exported variables directly.
-
-```php
-<?php
-// Sinch AMD Callout: PHP outbound call with Answering Machine Detection.
-// Reads credentials from exported environment variables (see Setup).
-// Requirements: PHP 8+ with the curl extension.
-
-$projectId         = getenv('PROJECT_ID')         ?: die("ERROR: PROJECT_ID not set.\n");
-$keyId             = getenv('KEY_ID')             ?: die("ERROR: KEY_ID not set.\n");
-$keySecret         = getenv('KEY_SECRET')         ?: die("ERROR: KEY_SECRET not set.\n");
-$sinchNumber       = getenv('SINCH_NUMBER')       ?: die("ERROR: SINCH_NUMBER not set.\n");
-$destinationNumber = getenv('DESTINATION_NUMBER') ?: die("ERROR: DESTINATION_NUMBER not set.\n");
-
-$url = "https://voice.api.sinch.com/v2/projects/{$projectId}/calls";
-
-// The `amd` command must be inside `onAnswer`. AMD fires different SVAML
-// depending on whether a human, machine, or beep is detected.
-$payload = [
-    'commands' => [
-        [
-            'command' => 'dial',
-            'callName' => 'amd-call',
-            'from'    => ['type' => 'PHONE', 'phone' => ['number' => $sinchNumber]],
-            'to'      => ['type' => 'PHONE', 'phone' => ['number' => $destinationNumber]],
-            'dialTimeoutDurationSeconds' => 45,
-            'maxCallDurationSeconds' => 300,
-            'events' => [
-                'onAnswer' => [
-                    [
-                        'command' => 'amd',
-                        'events'  => [
-                            // Human detected: play a personalized greeting
-                            'onHuman' => [
-                                [
-                                    'command'       => 'messages',
-                                    'messagesName'  => 'human-greeting',
-                                    'messages' => [
-                                        [
-                                            'type' => 'SAY',
-                                            'say'  => [
-                                                'text'      => 'Hello! This is a call from Acme Corp. An agent will be with you shortly.',
-                                                'voiceName' => 'Emma',
-                                            ],
-                                        ],
-                                    ],
-                                    'events' => [
-                                        'onFinish' => [['command' => 'hangup']],
-                                    ],
-                                ],
-                            ],
-                            // Machine greeting (no beep yet): hang up
-                            'onMachine' => [
-                                ['command' => 'hangup'],
-                            ],
-                            // Beep detected: leave voicemail immediately after the beep
-                            'onBeep' => [
-                                [
-                                    'command'       => 'messages',
-                                    'messagesName'  => 'voicemail-message',
-                                    'messages' => [
-                                        [
-                                            'type' => 'SAY',
-                                            'say'  => [
-                                                'text'      => 'Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.',
-                                                'voiceName' => 'Emma',
-                                            ],
-                                        ],
-                                    ],
-                                    'events' => [
-                                        'onFinish' => [['command' => 'hangup']],
-                                    ],
-                                ],
-                            ],
-                            // Unknown result: hang up safely
-                            'onUnknown' => [
-                                ['command' => 'hangup'],
-                            ],
-                        ],
-                    ],
-                ],
-            ],
-        ],
-    ],
-];
-
-echo "Placing AMD callout from {$sinchNumber} to {$destinationNumber} ...\n";
-
-$ch = curl_init($url);
-curl_setopt_array($ch, [
-    CURLOPT_POST           => true,
-    CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-    CURLOPT_USERPWD        => "{$keyId}:{$keySecret}",
-    CURLOPT_POSTFIELDS     => json_encode($payload),
-    CURLOPT_RETURNTRANSFER => true,
-]);
-
-$responseBody = curl_exec($ch);
-$httpCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlError    = curl_error($ch);
-curl_close($ch);
-
-if ($curlError) {
-    fwrite(STDERR, "curl error: {$curlError}\n");
-    exit(1);
-}
-
-$data = json_decode($responseBody, true);
-
-if ($httpCode === 201) {
-    echo "AMD call created successfully:\n";
-    echo json_encode($data, JSON_PRETTY_PRINT) . "\n";
-} else {
-    fwrite(STDERR, "ERROR {$httpCode}:\n");
-    fwrite(STDERR, json_encode($data, JSON_PRETTY_PRINT) . "\n");
-    exit(1);
-}
-```
-
-### Java (11+)
-
-`System.getenv` reads the exported variables directly.
-
-```java
-// Sinch AMD Callout: Java outbound call with Answering Machine Detection.
-// Requires Java 11+ (java.net.http.HttpClient).
-// Reads credentials from exported environment variables (see Setup).
-//
-// Compile: javac -d out AmdCallout.java
-// Run:     java -cp out com.sinch.tutorials.amd.AmdCallout
-
-package com.sinch.tutorials.amd;
-
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.util.Base64;
-
-public class AmdCallout {
-
-    public static void main(String[] args) throws Exception {
-        String projectId         = requireEnv("PROJECT_ID");
-        String keyId             = requireEnv("KEY_ID");
-        String keySecret         = requireEnv("KEY_SECRET");
-        String sinchNumber       = requireEnv("SINCH_NUMBER");
-        String destinationNumber = requireEnv("DESTINATION_NUMBER");
-
-        String url         = "https://voice.api.sinch.com/v2/projects/" + projectId + "/calls";
-        String credentials = Base64.getEncoder()
-                .encodeToString((keyId + ":" + keySecret).getBytes());
-
-        // The `amd` command must be inside `onAnswer`.
-        // AMD fires different SVAML depending on detection result.
-        String body = String.format("""
-            {
-              "commands": [
-                {
-                  "command": "dial",
-                  "callName": "amd-call",
-                  "from": { "type": "PHONE", "phone": { "number": "%s" } },
-                  "to":   { "type": "PHONE", "phone": { "number": "%s" } },
-                  "dialTimeoutDurationSeconds": 45,
-                  "maxCallDurationSeconds": 300,
-                  "events": {
-                    "onAnswer": [
-                      {
-                        "command": "amd",
-                        "events": {
-                          "onHuman": [
-                            {
-                              "command": "messages",
-                              "messagesName": "human-greeting",
-                              "messages": [
-                                {
-                                  "type": "SAY",
-                                  "say": {
-                                    "text": "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                                    "voiceName": "Emma"
-                                  }
-                                }
-                              ],
-                              "events": { "onFinish": [{ "command": "hangup" }] }
-                            }
-                          ],
-                          "onMachine": [
-                            { "command": "hangup" }
-                          ],
-                          "onBeep": [
-                            {
-                              "command": "messages",
-                              "messagesName": "voicemail-message",
-                              "messages": [
-                                {
-                                  "type": "SAY",
-                                  "say": {
-                                    "text": "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                                    "voiceName": "Emma"
-                                  }
-                                }
-                              ],
-                              "events": { "onFinish": [{ "command": "hangup" }] }
-                            }
-                          ],
-                          "onUnknown": [
-                            { "command": "hangup" }
-                          ]
-                        }
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-            """, sinchNumber, destinationNumber);
-
-        System.out.println("Placing AMD callout from " + sinchNumber + " to " + destinationNumber + " ...");
-
-        HttpClient client = HttpClient.newHttpClient();
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Basic " + credentials)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-        int statusCode = response.statusCode();
-
-        if (statusCode == 201) {
-            System.out.println("AMD call created successfully:");
-            System.out.println(response.body());
-        } else {
-            System.err.println("ERROR " + statusCode + ":");
-            System.err.println(response.body());
-            System.exit(1);
-        }
-    }
-
-    private static String requireEnv(String name) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            System.err.println("ERROR: " + name + " is not set. Export it first.");
-            System.exit(1);
-        }
-        return value;
-    }
-}
-```
-
-### Browser JavaScript (demo only)
-
-Calling the Sinch API directly from a browser hits CORS restrictions, so this is a copy-paste template rather than a runnable script. It ships with placeholder strings you must replace, and in production you should proxy the call through your own backend.
-
-```javascript
-// Sinch AMD Callout: browser JS to trigger an outbound call with AMD.
-// Note: calling the Sinch API directly from a browser will hit CORS restrictions.
-// In production, proxy these calls through your backend.
-// Replace the placeholders below; this file will not run as-is.
-
-(async function sinchAmdCallout() {
-  const projectId         = "YOUR_PROJECT_ID";
-  const keyId             = "YOUR_KEY_ID";
-  const keySecret         = "YOUR_KEY_SECRET";
-  const sinchNumber       = "+1XXXXXXXXXX";
-  const destinationNumber = "+1YYYYYYYYYY";
+  // Infer storage provider from the URL scheme
+  const storageDestination = storageDestinationUrl.startsWith("gs://") ? "GCP"
+    : storageDestinationUrl.startsWith("s3://") ? "AWS"
+    : "AZURE";
 
   const baseUrl    = "https://voice.api.sinch.com/v2";
   const authHeader = "Basic " + btoa(`${keyId}:${keySecret}`);
@@ -656,68 +201,48 @@ Calling the Sinch API directly from a browser hits CORS restrictions, so this is
     commands: [
       {
         command: "dial",
-        callName: "amd-call",
+        callName: "recorded-call",
         from: { type: "PHONE", phone: { number: sinchNumber } },
         to:   { type: "PHONE", phone: { number: destinationNumber } },
-        dialTimeoutDurationSeconds: 45,
-        maxCallDurationSeconds: 300,
+        dialTimeoutDurationSeconds: 30,
+        maxCallDurationSeconds: 3600,
         events: {
           onAnswer: [
             {
-              command: "amd",
-              events: {
-                onHuman: [
-                  {
-                    command: "messages",
-                    messagesName: "human-greeting",
-                    messages: [
-                      {
-                        type: "SAY",
-                        say: {
-                          text: "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                          voiceName: "Emma"
-                        }
-                      }
-                    ],
-                    events: { onFinish: [{ command: "hangup" }] }
-                  }
-                ],
-                onMachine: [{ command: "hangup" }],
-                onBeep: [
-                  {
-                    command: "messages",
-                    messagesName: "voicemail-message",
-                    messages: [
-                      {
-                        type: "SAY",
-                        say: {
-                          text: "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                          voiceName: "Emma"
-                        }
-                      }
-                    ],
-                    events: { onFinish: [{ command: "hangup" }] }
-                  }
-                ],
-                onUnknown: [{ command: "hangup" }]
+              command: "startRecording",
+              recordingName: "main-recording",
+              recordingOptions: {
+                format: "MP3",
+                recordingType: "COMBINED",
+                destination: storageDestination,
+                destinationUrl: storageDestinationUrl,
+                credentials: storageCredentials,
+                transcriptionOptions: { isEnabled: true, locale: "en-US" }
               }
+            },
+            {
+              command: "messages",
+              messagesName: "recording-notice",
+              messages: [
+                { type: "SAY", say: { text: "This call is being recorded.", voiceName: "Emma" } }
+              ]
             }
+          ],
+          onHangup: [
+            { command: "stopRecording", recordingName: "main-recording" }
           ]
         }
       }
     ]
   };
 
-  console.log(`Placing AMD callout from ${sinchNumber} to ${destinationNumber} ...`);
+  console.log(`Calling ${destinationNumber} with recording enabled (${storageDestination}) ...`);
 
   const response = await fetch(
     `${baseUrl}/projects/${projectId}/calls`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: authHeader
-      },
+      headers: { "Content-Type": "application/json", Authorization: authHeader },
       body: JSON.stringify(payload)
     }
   );
@@ -725,91 +250,77 @@ Calling the Sinch API directly from a browser hits CORS restrictions, so this is
   const data = await response.json();
 
   if (response.status === 201) {
-    console.log("AMD call created successfully:", data);
+    console.log("Call created with recording:", data);
+    console.log("Recording will be uploaded to:", storageDestinationUrl);
   } else {
     console.error(`ERROR ${response.status}:`, data);
   }
 })();
 ```
 
-## Place AMD inside an outbound dial (the contract)
-
-Run `amd` as the **first** command in the dial's `onAnswer` event:
+## The `startRecording` command
 
 ```json
 {
-  "commands": [
-    {
-      "command": "dial",
-      "callName": "amd-call",
-      "from": { "type": "PHONE", "phone": { "number": "+1SINCH_NUMBER" } },
-      "to":   { "type": "PHONE", "phone": { "number": "+1DESTINATION" } },
-      "dialTimeoutDurationSeconds": 45,
-      "maxCallDurationSeconds": 300,
-      "events": {
-        "onAnswer": [
-          { "command": "amd", "events": { /* onHuman / onMachine / onBeep / onUnknown */ } }
-        ]
-      }
+  "command": "startRecording",
+  "recordingName": "main-recording",
+  "recordingOptions": {
+    "format": "MP3",
+    "recordingType": "COMBINED",
+    "destination": "AWS",
+    "destinationUrl": "s3://my-voice-recordings/recordings/",
+    "credentials": "ACCESS_KEY:SECRET_KEY:REGION",
+    "transcriptionOptions": {
+      "isEnabled": true,
+      "locale": "en-US"
     }
-  ]
+  }
 }
 ```
 
-The four AMD branches (verified against the spec's `amdEvents` schema):
+Fields, verified against the spec's `startRecording` / `recordingOptions` schemas:
 
-- `onHuman`: a live person picked up. Connect to an agent or start a conversation.
-- `onMachine`: a machine answered and is playing its greeting (beep not yet detected). Usually hang up or wait for the beep.
-- `onBeep`: a voicemail beep was detected. Leave your voicemail message now.
-- `onUnknown`: detection was inconclusive. Safe default is to hang up, or treat as human.
+- `recordingName` (optional): identifier for this recording in the session, 1 to 32 chars, no whitespace. Other commands (`stopRecording`) reference it to target a specific recording.
+- `recordingOptions` (**required**). Within it, **`destination`, `destinationUrl`, and `credentials` are required**:
+  - `format`: `MP3` (default) or `WAV`.
+  - `recordingType`: `COMBINED` (both directions, default), `INBOUND` (inbound stream only), or `OUTBOUND` (outbound stream only).
+  - `destination`: `AWS` (default), `GCP`, or `AZURE`.
+  - `destinationUrl`: bucket path where files are uploaded.
+  - `credentials`: storage credentials in the destination-specific format.
+  - `transcriptionOptions` (optional): if present, `isEnabled` is **required**; `locale` is a BCP-47 code (e.g. `en-US`, `es-ES`), default `en-US`.
 
-Each branch holds a normal array of SVAML commands. All four are **optional**: branches you leave out are simply not executed, so you can wire only the outcomes you care about.
+`startRecording` is **non-blocking**, so the next SVAML command runs immediately. Recording continues until `stopRecording` is issued or the call ends.
 
-> Per the spec, the `amd` command has **no fields besides `command` and `events`**. There are no tuning knobs (no timeouts, no sensitivity) on the command itself.
+## Recording from a webhook (inbound calls)
 
-## Dynamic AMD via a callback server
+For inbound calls you return `startRecording` from your webhook instead of putting it in the outbound payload. Pick the server in your language (all four behave identically). On a `call.incoming` event the server answers, starts recording, and plays a recording notice.
 
-Use this when you want per-call AMD configuration (for example, choosing the voicemail script by destination) or when you want **server-side logs** of the AMD verdict. The callback server answers inbound calls and returns SVAML that runs `amd`, and it logs the `call.amd.*` result events Sinch posts back.
+Each server reads its configuration from the exported environment variables (`SINCH_NUMBER`, `STORAGE_DESTINATION_URL`, `STORAGE_CREDENTIALS`, and optionally `PORT`). Export them first, then start the server and expose it with `ngrok http <PORT>`. Set that URL as the service webhook (see [2.1 Handle Inbound PSTN Calls](../2.1-inbound-pstn/description.md)).
 
-### 1. Start the server and expose it
+### Node.js (Express, default PORT 3000)
 
-Paste one of the servers below, export your variables, then run it and expose it with ngrok:
-
-```bash
-node amd-callback-server.mjs   # Express, port 3000
-# or
-python amd-callback-server.py  # Flask, port 3000
-
-ngrok http 3000
-```
-
-Copy the ngrok HTTPS URL into your service's webhook configuration (set the service `callBehavior` to `WEBHOOK`, see [2.1 Handle Inbound PSTN Calls](../2.1-inbound-pstn/description.md) for the exact PATCH request). The server's `/webhook` endpoint receives the `call.incoming` event and responds with SVAML that answers the call and runs `amd`.
-
-There is no wrapper command in the webhook response: the `commands` array is returned at the top level, starting with `answer`, then `amd` as the first command after answering. Hangup handling goes in the top-level `events.onHangup`.
-
-### 2. Node.js server (Express)
-
-Requires `npm install express`, and `"type": "module"` in `package.json` (or a `.mjs` extension).
+Requirements: `npm install express`. Run with `node server.js`. Use `"type": "module"` in your `package.json`.
 
 ```javascript
-// Sinch AMD Callback Server: Express.js webhook server.
-// Handles inbound call events, responds with SVAML including the AMD command,
-// and logs the AMD verdict events Sinch posts back.
-// Reads config from exported environment variables (see Setup).
-//
-// Requirements: npm install express
-// Run: node amd-callback-server.mjs
+// Sinch Recording & Transcription: Express.js webhook server.
+// Handles call events and starts recording when the call is answered.
 
 import express from "express";
 
-const sinchNumber       = process.env.SINCH_NUMBER       || (() => { throw new Error("SINCH_NUMBER not set"); })();
-const destinationNumber = process.env.DESTINATION_NUMBER || (() => { throw new Error("DESTINATION_NUMBER not set"); })();
+const sinchNumber           = process.env.SINCH_NUMBER            || (() => { throw new Error("SINCH_NUMBER not set"); })();
+const storageDestinationUrl = process.env.STORAGE_DESTINATION_URL || (() => { throw new Error("STORAGE_DESTINATION_URL not set"); })();
+const storageCredentials    = process.env.STORAGE_CREDENTIALS     || (() => { throw new Error("STORAGE_CREDENTIALS not set"); })();
 const PORT = process.env.PORT || 3000;
+
+// Infer storage provider from URL scheme
+const storageDestination = storageDestinationUrl.startsWith("gs://") ? "GCP"
+  : storageDestinationUrl.startsWith("s3://") ? "AWS"
+  : "AZURE";
 
 const app = express();
 app.use(express.json());
 
-// POST /webhook: receives Sinch call events and responds with AMD SVAML
+// POST /webhook: handles call events from Sinch
 app.post("/webhook", (req, res) => {
   const event = req.body?.event;
   const call  = req.body?.call;
@@ -817,251 +328,506 @@ app.post("/webhook", (req, res) => {
   console.log(`Received event: ${event}`, call?.callId);
 
   if (event === "call.incoming") {
-    // Inbound call: respond with SVAML to answer and run AMD detection.
-    // Return the commands directly at the top level: `answer` first, then `amd`
-    // as the first command after answering. AMD then fires one of:
-    // onHuman, onMachine, onBeep, onUnknown. Hangup handling goes in the
-    // top-level events.onHangup (honored only on call.incoming responses).
+    // Inbound call: answer, start recording, play notice, then bridge to agent or hang up
     const svamlResponse = {
       commands: [
+        // Answer the inbound call
         { command: "answer" },
-        // Run AMD detection as the first thing after answering
+
+        // Start recording immediately when the inbound call is answered
         {
-          command: "amd",
-          events: {
-            // Live human detected: play a personalized message
-            onHuman: [
-              {
-                command: "messages",
-                messagesName: "human-greeting",
-                messages: [
-                  {
-                    type: "SAY",
-                    say: {
-                      text: "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                      voiceName: "Emma"
-                    }
-                  }
-                ],
-                events: { onFinish: [{ command: "hangup" }] }
-              }
-            ],
-
-            // Machine greeting detected (waiting for beep): hang up silently
-            onMachine: [{ command: "hangup" }],
-
-            // Beep detected: leave voicemail right after the beep tone
-            onBeep: [
-              {
-                command: "messages",
-                messagesName: "voicemail-message",
-                messages: [
-                  {
-                    type: "SAY",
-                    say: {
-                      text: "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                      voiceName: "Emma"
-                    }
-                  }
-                ],
-                events: { onFinish: [{ command: "hangup" }] }
-              }
-            ],
-
-            // AMD inconclusive: hang up rather than risk a bad experience
-            onUnknown: [{ command: "hangup" }]
+          command: "startRecording",
+          recordingName: "main-recording",
+          recordingOptions: {
+            format: "MP3",
+            recordingType: "COMBINED",        // Record both parties
+            destination: storageDestination,
+            destinationUrl: storageDestinationUrl,
+            credentials: storageCredentials,
+            transcriptionOptions: {
+              isEnabled: true,                // Generate a transcription file
+              locale: "en-US"
+            }
           }
+        },
+
+        // Tell the caller the call is being recorded (legal requirement in many jurisdictions)
+        {
+          command: "messages",
+          messagesName: "recording-notice",
+          messages: [
+            {
+              type: "SAY",
+              say: {
+                text: "This call may be recorded for quality and compliance purposes.",
+                voiceName: "Emma"
+              }
+            }
+          ]
         }
+
+        // Add your additional SVAML commands here, e.g.:
+        // { command: "bridgeCall", bridgeName: "agent-bridge" }
+        // { command: "dial", callName: "agent", to: { ... } }
       ],
-      events: {
-        onHangup: [{ command: "hangup" }]
-      }
+      events: { onHangup: [{ command: "stopRecording", recordingName: "main-recording" }] }
     };
 
     return res.status(200).json(svamlResponse);
   }
 
-  // AMD verdict events: this is how you see which branch fired, server-side.
-  if (event?.startsWith("call.amd.")) {
-    console.log(`AMD verdict: ${event}`);         // call.amd.human, call.amd.beep, ...
-    return res.status(200).json({ commands: [] }); // no further SVAML needed
-  }
-
-  // Acknowledge all other events
   console.log(`Unhandled event: ${event}`);
   res.status(200).json({ commands: [] });
 });
 
 app.listen(PORT, () => {
-  console.log(`AMD callback server listening on port ${PORT}`);
-  console.log(`Set your Sinch service webhook URL to: http://localhost:${PORT}/webhook`);
+  console.log(`Recording webhook server listening on port ${PORT}`);
+  console.log(`Storage: ${storageDestination} -> ${storageDestinationUrl}`);
   console.log(`(Use ngrok: ngrok http ${PORT})`);
 });
 ```
 
-### 3. Python server (Flask)
+### Python (Flask, default PORT 8081)
 
-Requires `pip install flask`.
+Requirements: `pip install flask`. Run with `python server.py`.
 
 ```python
-# Sinch AMD Callback Server: Flask webhook server.
-# Handles inbound call events, responds with SVAML including the AMD command,
-# and logs the AMD verdict events Sinch posts back.
-# Reads config from exported environment variables (see Setup).
-# Requirements: pip install flask
+# Sinch Recording & Transcription: Flask webhook server.
+# Starts recording when a call is answered and uploads to cloud storage.
 
 import os
 import sys
 from flask import Flask, request, jsonify
 
-sinch_number       = os.environ.get("SINCH_NUMBER")
-destination_number = os.environ.get("DESTINATION_NUMBER")
+sinch_number            = os.environ.get("SINCH_NUMBER")
+storage_destination_url = os.environ.get("STORAGE_DESTINATION_URL")
+storage_credentials     = os.environ.get("STORAGE_CREDENTIALS")
 
-for var, name in [(sinch_number, "SINCH_NUMBER"), (destination_number, "DESTINATION_NUMBER")]:
+for var, name in [
+    (sinch_number, "SINCH_NUMBER"),
+    (storage_destination_url, "STORAGE_DESTINATION_URL"),
+    (storage_credentials, "STORAGE_CREDENTIALS"),
+]:
     if not var:
-        print(f"ERROR: {name} is not set. Export it first.", file=sys.stderr)
+        print(f"ERROR: {name} is not set.", file=sys.stderr)
         sys.exit(1)
 
-port = int(os.environ.get("PORT", 3000))
-app  = Flask(__name__)
+# Infer storage provider from URL scheme
+if storage_destination_url.startswith("gs://"):
+    storage_destination = "GCP"
+elif storage_destination_url.startswith("s3://"):
+    storage_destination = "AWS"
+else:
+    storage_destination = "AZURE"
+
+port = int(os.environ.get("PORT", 8081))
+app = Flask(__name__)
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Handles Sinch call events and responds with AMD SVAML."""
-    body  = request.get_json(force=True)
+    """Handles Sinch call events and starts recording on answer."""
+    body  = request.json
     event = body.get("event")
     call  = body.get("call", {})
 
     print(f"Received event: {event}, callId: {call.get('callId')}")
 
     if event == "call.incoming":
-        # Inbound call: answer and run AMD.
-        # Return the commands directly at the top level: `answer` first, then
-        # `amd` as the first command after answering. AMD fires one of:
-        # onHuman, onMachine, onBeep, onUnknown. Hangup handling goes in the
-        # top-level events.onHangup (honored only on call.incoming responses).
+        # Inbound call: answer, start recording, play notice
         svaml_response = {
             "commands": [
+                # Answer the inbound call
                 {"command": "answer"},
-                # AMD detection: first command after answering
+
+                # Start recording immediately on answer
                 {
-                    "command": "amd",
-                    "events": {
-                        # Live human: play a personalized greeting
-                        "onHuman": [
-                            {
-                                "command": "messages",
-                                "messagesName": "human-greeting",
-                                "messages": [
-                                    {
-                                        "type": "SAY",
-                                        "say": {
-                                            "text": "Hello! This is a call from Acme Corp. An agent will be with you shortly.",
-                                            "voiceName": "Emma"
-                                        }
-                                    }
-                                ],
-                                "events": {"onFinish": [{"command": "hangup"}]}
-                            }
-                        ],
-
-                        # Machine greeting (no beep yet): hang up silently
-                        "onMachine": [{"command": "hangup"}],
-
-                        # Beep detected: leave voicemail right after the beep
-                        "onBeep": [
-                            {
-                                "command": "messages",
-                                "messagesName": "voicemail-message",
-                                "messages": [
-                                    {
-                                        "type": "SAY",
-                                        "say": {
-                                            "text": "Hi, this is Acme Corp calling about your recent inquiry. Please call us back at 555-1234. Thank you.",
-                                            "voiceName": "Emma"
-                                        }
-                                    }
-                                ],
-                                "events": {"onFinish": [{"command": "hangup"}]}
-                            }
-                        ],
-
-                        # Unknown result: hang up safely
-                        "onUnknown": [{"command": "hangup"}]
+                    "command": "startRecording",
+                    "recordingName": "main-recording",
+                    "recordingOptions": {
+                        "format": "MP3",
+                        "recordingType": "COMBINED",    # Both parties recorded
+                        "destination": storage_destination,
+                        "destinationUrl": storage_destination_url,
+                        "credentials": storage_credentials,
+                        "transcriptionOptions": {
+                            "isEnabled": True,          # Generate transcript alongside audio
+                            "locale": "en-US"
+                        }
                     }
+                },
+
+                # Inform the caller the call is being recorded
+                {
+                    "command": "messages",
+                    "messagesName": "recording-notice",
+                    "messages": [
+                        {
+                            "type": "SAY",
+                            "say": {
+                                "text": "This call may be recorded for quality and compliance purposes.",
+                                "voiceName": "Emma"
+                            }
+                        }
+                    ]
                 }
+
+                # Add further SVAML commands here:
+                # {"command": "bridgeCall", "bridgeName": "agent-bridge"},
+                # {"command": "dial", "callName": "agent", "to": {...}}
             ],
-            "events": {
-                "onHangup": [{"command": "hangup"}]
-            }
+            "events": {"onHangup": [{"command": "stopRecording", "recordingName": "main-recording"}]},
         }
         return jsonify(svaml_response), 200
-
-    # AMD verdict events: this is how you see which branch fired, server-side.
-    if event and event.startswith("call.amd."):
-        print(f"AMD verdict: {event}")            # call.amd.human, call.amd.beep, ...
-        return jsonify({"commands": []}), 200      # no further SVAML needed
 
     print(f"Unhandled event: {event}")
     return jsonify({"commands": []}), 200
 
 
 if __name__ == "__main__":
-    print(f"AMD callback server listening on port {port}")
-    print(f"Set your Sinch service webhook URL to: http://localhost:{port}/webhook")
+    print(f"Recording webhook server listening on port {port}")
+    print(f"Storage: {storage_destination} -> {storage_destination_url}")
     print(f"(Use ngrok: ngrok http {port})")
     app.run(host="0.0.0.0", port=port)
 ```
 
-### 4. See the AMD verdict in your logs
+### PHP (Slim 4, default PORT 3000)
 
-Both servers above include a handler for the AMD result events. Sinch posts the verdict back to the same webhook URL as one of `call.amd.human`, `call.amd.machine`, `call.amd.beep`, or `call.amd.unknown` (verified event names). With the handler in place, answering as a human logs `AMD verdict: call.amd.human`, and a voicemail logs `call.amd.machine` then `call.amd.beep`.
+Requirements: `composer require slim/slim slim/psr7 nyholm/psr7`. Run with `php -S 0.0.0.0:3000 server.php`. Slim reads config via `getenv`, which picks up your exported variables directly.
 
-Webhook delivery uses CloudEvents (HTTP binary content mode, `ce-type: com.sinch.voice.webhook.v2`); the JSON body is `{ event, call }`. 
-## What success looks like
+```php
+<?php
+// Sinch Recording & Transcription: Slim Framework 4 webhook server.
+// Starts recording when a call is answered and uploads to cloud storage.
 
-| Scenario | On the answering phone | In your callback log |
-| --- | --- | --- |
-| Human answers | Hears the `onHuman` greeting | `call.amd.human` |
-| Voicemail | Beep, then hears the `onBeep` voicemail message | `call.amd.machine` then `call.amd.beep` |
-| Machine, no beep | Silence then hangup | `call.amd.machine` |
-| Inconclusive | Hangup | `call.amd.unknown` |
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Slim\Factory\AppFactory;
 
-The inline-callout terminal only ever prints `AMD call created successfully` (HTTP 201). That confirms the call was placed, not which branch ran. Use the callback server for the branch verdict.
+require __DIR__ . '/vendor/autoload.php';
 
-## Tips for AMD accuracy
+$sinchNumber           = getenv('SINCH_NUMBER')            ?: die("ERROR: SINCH_NUMBER not set.\n");
+$storageDestinationUrl = getenv('STORAGE_DESTINATION_URL') ?: die("ERROR: STORAGE_DESTINATION_URL not set.\n");
+$storageCredentials    = getenv('STORAGE_CREDENTIALS')     ?: die("ERROR: STORAGE_CREDENTIALS not set.\n");
 
-- Allow `dialTimeoutDurationSeconds` of at least `30`, because machines may take a few seconds to answer. The scripts use `45`.
-- Make `amd` the **first** command in `onAnswer`. Do not play messages before AMD runs, since they bias detection.
-- `onBeep` is the right moment to start your voicemail message, not `onMachine`.
-- If you want hold tones during analysis, play them on a separate call leg, not the leg being analysed.
+// Infer storage provider from URL scheme
+if (str_starts_with($storageDestinationUrl, 'gs://')) {
+    $storageDestination = 'GCP';
+} elseif (str_starts_with($storageDestinationUrl, 's3://')) {
+    $storageDestination = 'AWS';
+} else {
+    $storageDestination = 'AZURE';
+}
 
-## Language coverage
+$app = AppFactory::create();
+$app->addBodyParsingMiddleware();
 
-Six callout variants are shown above, plus two callback-server variants. All send an **identical AMD payload** (same four branches, same `voiceName: Emma`, `dialTimeoutDurationSeconds: 45`, `maxCallDurationSeconds: 300`). Every server-side variant reads credentials from **exported environment variables**, so export your variables in the same shell before running.
+$app->post('/webhook', function (Request $request, Response $response)
+    use ($sinchNumber, $storageDestination, $storageDestinationUrl, $storageCredentials) {
 
-| Variant | Run | Notes |
-| --- | --- | --- |
-| Bash | `bash amd-callout.sh` | curl + Basic auth, pretty-prints with `jq` if present. |
-| Python | `python amd-callout.py` | `pip install requests`. |
-| Node.js | `node amd-callout.mjs` | Node 18+ native `fetch`, save as `.mjs` or set `"type": "module"`. |
-| Browser JS | (browser) | Demo only, has placeholder credentials and hits CORS. Proxy through a backend in production. |
-| PHP | `php amd-callout.php` | PHP 8+ with curl. Reads env via `getenv()`, so export the vars first. |
-| Java | `javac -d out AmdCallout.java && java -cp out com.sinch.tutorials.amd.AmdCallout` | Java 11+. Reads `System.getenv`, so export the vars first. |
-| Node callback server | `node amd-callback-server.mjs` | Express, `npm install express`. |
-| Python callback server | `python amd-callback-server.py` | Flask, `pip install flask`. |
+    $body  = $request->getParsedBody();
+    $event = $body['event'] ?? null;
+    $call  = $body['call']  ?? [];
 
-> The five runnable callouts (Bash, Python, Node.js, PHP, Java) all read credentials from the exported environment. The browser JS variant is the odd one out: it uses placeholder strings and will not run as-is, since a browser has no environment variables to export and calling the API directly hits CORS. The Node.js callout and the browser JS are intentionally different (server-side Node vs browser), not duplicates.
+    error_log("Received event: {$event}, callId: " . ($call['callId'] ?? ''));
 
-## The `amd` command at a glance
+    if ($event === 'call.incoming') {
+        $svaml = [
+            'commands' => [
+                // Answer the inbound call
+                ['command' => 'answer'],
 
-- `amd` is a non-blocking SVAML command with **only** `command` and `events`.
-- `events` holds optional `onHuman`, `onMachine`, `onBeep`, and `onUnknown` arrays, each a list of SVAML commands.
-- Its natural home is the first command after the call is answered: inside `dial.events.onAnswer` for outbound calls, or right after `answer` in a webhook response for inbound calls.
-- The AMD verdict is also delivered as a webhook event: `call.amd.human` / `call.amd.machine` / `call.amd.beep` / `call.amd.unknown`.
+                // Start recording immediately when the call is answered
+                [
+                    'command'       => 'startRecording',
+                    'recordingName' => 'main-recording',
+                    'recordingOptions' => [
+                        'format'        => 'MP3',
+                        'recordingType' => 'COMBINED',      // Both parties
+                        'destination'   => $storageDestination,
+                        'destinationUrl' => $storageDestinationUrl,
+                        'credentials'   => $storageCredentials,
+                        'transcriptionOptions' => [
+                            'isEnabled' => true,            // Auto-transcribe the recording
+                            'locale'    => 'en-US',
+                        ],
+                    ],
+                ],
 
-## Prerequisites
+                // Inform the caller the call is being recorded
+                [
+                    'command'       => 'messages',
+                    'messagesName'  => 'recording-notice',
+                    'messages' => [
+                        [
+                            'type' => 'SAY',
+                            'say'  => [
+                                'text'      => 'This call may be recorded for quality and compliance purposes.',
+                                'voiceName' => 'Emma',
+                            ],
+                        ],
+                    ],
+                ],
 
-- A [Sinch account](https://dashboard.sinch.com) with API credentials and a Sinch virtual number.
-- For the callback-server path: a publicly reachable URL (use [ngrok](https://ngrok.com) during development) and a service set to `WEBHOOK`.
+                // Add your routing SVAML here:
+                // ['command' => 'bridgeCall', 'bridgeName' => 'agent-bridge'],
+            ],
+            'events' => ['onHangup' => [['command' => 'stopRecording', 'recordingName' => 'main-recording']]],
+        ];
+
+        $response->getBody()->write(json_encode($svaml));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    }
+
+    error_log("Unhandled event: {$event}");
+    $response->getBody()->write(json_encode(['commands' => []]));
+    return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+});
+
+$port = (int)(getenv('PORT') ?: 3000);
+echo "Recording webhook server listening on port {$port}\n";
+echo "Storage: {$storageDestination} -> {$storageDestinationUrl}\n";
+echo "(Use ngrok: ngrok http {$port})\n";
+
+$app->run();
+```
+
+### Java (Spring Boot, default PORT 3000)
+
+Add `spring-boot-starter-web` to your `pom.xml` and run with `mvn spring-boot:run`. Spring reads config via `System.getenv`, which picks up your exported variables directly.
+
+```java
+// Sinch Recording & Transcription: Spring Boot webhook server.
+// Starts recording when a call is answered and uploads to cloud storage.
+
+package com.sinch.tutorials.recording;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+@SpringBootApplication
+@RestController
+public class Server {
+
+    private final String storageDestination;
+    private final String storageDestinationUrl;
+    private final String storageCredentials;
+
+    public Server() {
+        String sinchNumber         = requireEnv("SINCH_NUMBER");
+        this.storageDestinationUrl = requireEnv("STORAGE_DESTINATION_URL");
+        this.storageCredentials    = requireEnv("STORAGE_CREDENTIALS");
+
+        // Infer provider from URL scheme
+        if (storageDestinationUrl.startsWith("gs://")) {
+            this.storageDestination = "GCP";
+        } else if (storageDestinationUrl.startsWith("s3://")) {
+            this.storageDestination = "AWS";
+        } else {
+            this.storageDestination = "AZURE";
+        }
+    }
+
+    public static void main(String[] args) {
+        String port = System.getenv().getOrDefault("PORT", "3000");
+        System.setProperty("server.port", port);
+        SpringApplication.run(Server.class, args);
+        System.out.println("Recording webhook server started on port " + port);
+    }
+
+    /** POST /webhook: handles Sinch call events and starts recording on answer */
+    @PostMapping("/webhook")
+    public ResponseEntity<Map<String, Object>> webhook(@RequestBody Map<String, Object> body) {
+        String event = (String) body.getOrDefault("event", "");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> call = (Map<String, Object>) body.getOrDefault("call", Map.of());
+
+        System.out.println("Received event: " + event + ", callId: " + call.get("callId"));
+
+        if ("call.incoming".equals(event)) {
+            Map<String, Object> svaml = Map.of(
+                "commands", List.of(
+                    // Answer the inbound call
+                    Map.of("command", "answer"),
+
+                    // Start recording immediately when the call is answered
+                    Map.of(
+                        "command", "startRecording",
+                        "recordingName", "main-recording",
+                        "recordingOptions", Map.of(
+                            "format", "MP3",
+                            "recordingType", "COMBINED",       // Both parties recorded
+                            "destination", storageDestination,
+                            "destinationUrl", storageDestinationUrl,
+                            "credentials", storageCredentials,
+                            "transcriptionOptions", Map.of(
+                                "isEnabled", true,             // Generate transcript
+                                "locale", "en-US"
+                            )
+                        )
+                    ),
+
+                    // Inform the caller the call is being recorded
+                    Map.of(
+                        "command", "messages",
+                        "messagesName", "recording-notice",
+                        "messages", List.of(
+                            Map.of(
+                                "type", "SAY",
+                                "say", Map.of(
+                                    "text", "This call may be recorded for quality and compliance purposes.",
+                                    "voiceName", "Emma"
+                                )
+                            )
+                        )
+                    )
+
+                    // Add routing commands here, e.g.:
+                    // Map.of("command", "bridgeCall", "bridgeName", "agent-bridge")
+                ),
+                "events", Map.of("onHangup", List.of(Map.of("command", "stopRecording", "recordingName", "main-recording")))
+            );
+
+            return ResponseEntity.ok(svaml);
+        }
+
+        System.out.println("Unhandled event: " + event);
+        return ResponseEntity.ok(Map.of("commands", List.of()));
+    }
+
+    private static String requireEnv(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            System.err.println("ERROR: " + name + " is not set.");
+            System.exit(1);
+        }
+        return value;
+    }
+}
+```
+
+> The webhook body is `{ event, call }`; read identifiers off the nested `call` object (e.g. `call.callId`, `call.sessionId`), consistent with [2.1 Handle Inbound PSTN Calls](../2.1-inbound-pstn/description.md). The servers here log `call.callId`.
+
+The equivalent SVAML the server returns on `call.incoming` looks like this:
+
+```json
+{
+  "commands": [
+    { "command": "answer" },
+    {
+      "command": "startRecording",
+      "recordingName": "main-recording",
+      "recordingOptions": {
+        "format": "MP3",
+        "recordingType": "COMBINED",
+        "destination": "AWS",
+        "destinationUrl": "s3://my-voice-recordings/recordings/",
+        "credentials": "ACCESS_KEY:SECRET_KEY:REGION",
+        "transcriptionOptions": { "isEnabled": true, "locale": "en-US" }
+      }
+    },
+    {
+      "command": "messages",
+      "messagesName": "recording-notice",
+      "messages": [
+        { "type": "SAY", "say": { "text": "This call may be recorded for quality and compliance purposes.", "voiceName": "Emma" } }
+      ]
+    }
+  ],
+  "events": { "onHangup": [{ "command": "stopRecording", "recordingName": "main-recording" }] }
+}
+```
+
+## Stopping a recording mid-call
+
+Issue `stopRecording` referencing the `recordingName` (the only required field besides `command`):
+
+```json
+{ "command": "stopRecording", "recordingName": "main-recording" }
+```
+
+You can record multiple distinct streams in one session by giving them distinct `recordingName` values, then stop them independently.
+
+## After the call ends
+
+Sinch uploads the recording to your bucket. The filename includes the call/session identifier. If transcription is enabled, a JSON transcript file is uploaded alongside the audio.
+
+## Recording lifecycle events
+
+`startRecording` accepts an optional `events` block (`recordingEvents` schema). The spec defines exactly two handlers:
+
+| Event | When it fires |
+| --- | --- |
+| `onFinish` | The recording was successfully stopped. Note: this does **not** mean the file has been delivered to your bucket yet; it may still be in transit. |
+| `onFailure` | The recording failed to start (auth error, missing bucket, bad credentials, etc.). **If omitted, failures are silently ignored and the call flow continues.** |
+
+Announce a problem on the call instead of recording silently failing:
+
+```json
+{
+  "command": "startRecording",
+  "recordingName": "compliance",
+  "recordingOptions": { "destination": "AWS", "destinationUrl": "s3://...", "credentials": "..." },
+  "events": {
+    "onFailure": [
+      {
+        "command": "messages",
+        "messages": [
+          { "type": "SAY", "say": { "text": "We are unable to record this call. Goodbye.", "voiceName": "Emma" } }
+        ],
+        "events": { "onFinish": [{ "command": "hangup" }] }
+      }
+    ]
+  }
+}
+```
+
+The example servers in this tutorial do **not** wire `onFailure`. Add it for any production flow that legally requires a recording.
+
+## Other storage providers
+
+The credential string is provider-specific. AWS is shown above. For the others, set `STORAGE_DESTINATION_URL` so the examples infer the right `destination`:
+
+```bash
+# Google Cloud Storage  (destination inferred: GCP)
+export STORAGE_DESTINATION_URL=gs://my-gcs-bucket/recordings/
+export STORAGE_CREDENTIALS=<service-account credential>   # e.g. base64-encoded service-account JSON
+
+# Azure Blob Storage     (destination inferred: AZURE)
+export STORAGE_DESTINATION_URL=https://myaccount.blob.core.windows.net/recordings/
+export STORAGE_CREDENTIALS=<Azure storage credential>     # e.g. connection string or SAS token
+```
+
+- **GCS**: a service account with the `Storage Object Creator` role on the bucket.
+- **Azure**: a storage account with a Blob container plus an access key or SAS token.
+
+> The exact credential encoding for GCP and Azure (base64-JSON vs. raw JSON, connection string vs. SAS token) is not specified in the OpenAPI document. The spec only types `credentials` as a free-form string and gives an AWS-only example. Confirm the GCP/Azure formats against current Sinch product docs before relying on them.
+
+## Production-readiness checklist
+
+| Concern | What to do |
+| --- | --- |
+| **Consent** | In many jurisdictions you must announce recording *before* `startRecording` runs. Play a `SAY` message first (the examples play one right after, which may be too late for strict regimes). |
+| **Bucket permissions** | Grant the minimum (`s3:PutObject` etc.), not full bucket access. Rotate keys periodically. |
+| **Lifecycle / cost** | Apply a bucket lifecycle policy to age recordings to cheaper storage and delete after your retention period. |
+| **Multiple recordings** | Each `recordingName` produces a separate output. Use distinct names per leg. |
+| **Inbound-only vs combined** | If only one party consented, use `recordingType: INBOUND` or `OUTBOUND`. Default `COMBINED` captures both. |
+| **Transcription locale** | Default `en-US`. Set explicitly for non-English calls, since a wrong locale yields a wrong transcript. |
+| **Failure handling** | Wire `events.onFailure` so a misconfigured bucket doesn't silently swallow a recording. |
+| **Secrets in the shell** | Exported variables live in your shell environment and can appear in shell history. Use a secrets manager or a restricted, non-committed profile file in production. |
+
+## Command reference
+
+- `startRecording`: non-blocking; requires `recordingOptions`. Optional `recordingName` (1 to 32 chars, no whitespace) and `events`.
+- `recordingOptions`: requires `destination`, `destinationUrl`, `credentials`. Optional `format`, `recordingType`, `transcriptionOptions`.
+- `format`: `MP3` (default) / `WAV`.
+- `recordingType`: `COMBINED` (default) / `INBOUND` / `OUTBOUND`.
+- `destination`: `AWS` (default) / `GCP` / `AZURE`.
+- `transcriptionOptions`: `isEnabled` required when present; `locale` defaults to `en-US`.
+- `stopRecording`: non-blocking; requires `recordingName`.
+- `recordingEvents`: `onFinish`, `onFailure` (both optional).

@@ -283,21 +283,27 @@ content-type:   application/json
   "call": { "callId": "...", "sessionId": "...", "callResult": "IN_PROGRESS" } }
 ```
 
-### Webhook contract (from the spec)
+### Webhook contract 
 
-- **5-second response timeout.** Slow responses may affect call quality, so do
-  any heavy work asynchronously and respond quickly.
-- **At-most-once delivery.** Each event is sent once and **never retried on
-  failure**. Persist any critical state from the event before you return your
-  response, and design your handler to tolerate missed events. This is exactly
-  why polling is a useful back-fill, as described below.
-- **`fallbackUrl`.** If a `fallbackUrl` is configured on the service and the
-  primary URL starts returning errors, Sinch switches **future** requests to the
-  fallback. The fallback is *not* called for the same request that failed.
+- Sinch enforces a **5-second response timeout**. Slow responses may affect call quality.
+- Webhook requests are **blocking**: execution of the call flow pauses until the endpoint responds, and the next command runs once a response has been received.
+- Webhook URLs are configured on the service via the [Services API](/docs/voice/api-reference/voice/services) or the [Dashboard](https://dashboard.sinch.com/voice/services). The `webhook` SVAML command carries its own `url` and `fallbackUrl` for mid-call events.
+#### What counts as a failure
+A delivery attempt has failed when: 
+- The endpoint returns a non-successful status code.
+- The endpoint does not respond within the 5-second timeout.
+- Returned body does not contain proper SVAML commands.
+Because the call flow is blocked while waiting, a delivery that ends with a failure disconnects the call. This happens when the primary URL fails and no `fallbackUrl` is configured, or when both the primary URL and the `fallbackUrl` fail.
+#### Failover algorithm
+This section is the authoritative description of how the webhook URL is selected. When a `fallbackUrl` is configured:
+1. Requests are sent to the primary `url`.
+2. If a request to the primary URL fails, that same event is re-sent immediately to the `fallbackUrl`. The primary URL continues to be used for subsequent requests.
+3. After several **consecutive failures** (exact number may vary) of the primary URL, the primary URL is bypassed and requests are sent only to the `fallbackUrl`. This avoids incurring the timeout on every request.
+4. While the primary URL is bypassed it is retried once every **60 seconds**. The interval is counted from the last failure of the primary URL that triggers the bypass. Each unsuccessful retry restarts the 60-second clock. As soon as a retry succeeds the primary URL is restored and processing returns to step 1.
+If no `fallbackUrl` is configured, a failed request is not retried and the event is not delivered.
+#### Delivery guarantees
+Because a failed request is re-sent to the fallback URL, the same event can be delivered more than once — for example when the primary endpoint received and processed the request but responded too slowly. Webhook handlers should be idempotent and deduplicate on the `ce-id` and `ce-source` header pair.
 
-> The "Webhooks overview" prose elsewhere in the API docs mentions retries; the
-> authoritative "Timeouts and failover" section of the spec specifies
-> at-most-once with no retries. We follow the authoritative section here.
 
 ### Suppressing webhooks per command
 

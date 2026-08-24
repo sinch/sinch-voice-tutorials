@@ -138,11 +138,7 @@ BODY=$(cat <<EOF
                             { "command": "bridgeCall",   "bridgeName": "hunt-bridge" }
                           ],
                           "onTimeout": [
-                            { "command": "messages", "messagesName": "noanswer",
-                              "messages": [ { "type": "SAY",
-                                "say": { "text": "We are sorry, no agent is available. Please try again later.",
-                                         "voiceName": "Emma" } } ],
-                              "events": { "onFinish": [ { "command": "hangup", "callName": "customer" } ] } }
+                            { "command": "hangup", "callName": "customer" }
                           ]
                         }
                       }
@@ -174,7 +170,6 @@ curl -s -X POST \
 - Each nested `dial` is independent: when `onTimeout` fires on `agent-1`, that leg has already been torn down, so the next `dial` opens a fresh channel. (Per the spec: "Commands that appear inside event handlers form independent sequences and execute in their own context.")
 - `bridgeCall` with a shared `bridgeName` connects the answering agent to `customer`. The first call to enter the bridge creates it; the second joins (auto-created on first reference, per the `bridgeCall` schema).
 - The `customer` leg keeps playing the `hold` messages (`messages` is non-blocking) until the answering agent issues `stopMessages` + `bridgeCall`.
-- `onHangup` on the outer `dial` propagates as a session-wide hangup so the agent leg drops if the customer leaves first.
 
 ### What success looks like
 

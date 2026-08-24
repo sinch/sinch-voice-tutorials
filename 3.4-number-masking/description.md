@@ -65,27 +65,51 @@ The webhook servers in this tutorial all listen at **`POST /webhook`**. So your 
 
 ## Step 0: Smoke-test the SVAML (no phone needed)
 
-Before any tunneling, confirm the masking SVAML you intend to return is valid. `POST /svaml/validate` checks a payload with the same rules as a live call and returns `{ "isValid": true | false, "errors": [...] }`. It takes the **commands array** (passed as `svaml`), not the full webhook response wrapper.
+Before any tunneling, confirm the masking SVAML you intend to return is valid. `POST /svaml/validate` checks a full SVAML payload (commands, optional `callName`, optional `events`) with the same rules as a live call and returns `{ "isValid": true | false, "errors": [...] }`. You can optionally pass `"validationType": "STRICT"` to catch unrecognized properties.
+
+The request wraps the SVAML payload inside a `svaml` property. This is the full `svamlInput` shape (the same structure your webhook returns), not a bare commands array:
 
 ```bash
 curl -s -X POST \
   -u "$KEY_ID:$KEY_SECRET" \
   "https://voice.api.sinch.com/v2/projects/$PROJECT_ID/svaml/validate" \
   -H "Content-Type: application/json" \
-  -d '{
-      "svaml": {"commands":[
-        { "command": "answer" },
-        { "command": "bridgeCall", "bridgeName": "main-bridge" },
-        { "command": "dial",
-          "callName": "callee",
-          "from": { "type": "PHONE", "phone": { "number": "' "$SINCH_NUMBER" '" } },
-          "to":   { "type": "PHONE", "phone": { "number": "' "$DESTINATION_NUMBER" '" } },
-          "dialTimeoutDurationSeconds": 30 }
-      ]}
-  }'
+  -d "$(printf '{
+  "validationType": "STRICT",
+  "svaml": {
+    "callName": "caller",
+    "commands": [
+      { "command": "answer" },
+      {
+        "command": "messages",
+        "messagesName": "greeting",
+        "messages": [
+          { "type": "SAY", "say": { "text": "Please hold while we connect your call.", "voiceName": "Emma" } }
+        ]
+      },
+      { "command": "bridgeCall", "bridgeName": "main-bridge" },
+      {
+        "command": "dial",
+        "callName": "callee",
+        "from": { "type": "PHONE", "phone": { "number": "%s" } },
+        "to":   { "type": "PHONE", "phone": { "number": "%s" } },
+        "dialTimeoutDurationSeconds": 30,
+        "events": {
+          "onAnswer": [{ "command": "bridgeCall", "bridgeName": "main-bridge" }],
+          "onHangup": [{ "command": "hangup", "callName": "caller" }]
+        }
+      }
+    ],
+    "events": {
+      "onHangup": [{ "command": "hangup", "callName": "callee" }]
+    }
+  }
+}' "$SINCH_NUMBER" "$DESTINATION_NUMBER")"
 ```
 
 Expected: `{"isValid":true}`. A `200` means validation *ran*, not that the payload passed, so always read `isValid`.
+
+> **Tip:** use `STRICT` validation during development. It rejects unrecognized properties (typos like `bridgename` instead of `bridgeName`) that `NORMAL` validation silently ignores.
 
 ---
 
@@ -151,11 +175,14 @@ app.post("/webhook", (req, res) => {
           dialTimeoutDurationSeconds: 30,
           events: {
             onAnswer: [{ command: "bridgeCall", bridgeName: "main-bridge" }],
+            // Callee hangs up -> end the caller leg by name.
+            // A bare { command: "hangup" } would target the callee (the current
+            // leg), which is already disconnecting, making it a no-op.
             onHangup: [{ command: "hangup", callName: "caller" }]
           }
         }
       ],
-      // Caller hangs up -> end the outbound (callee) leg too
+      // Caller hangs up -> end the outbound (callee) leg by name
       events: { onHangup: [{ command: "hangup", callName: "callee" }] }
     });
   }
@@ -226,6 +253,9 @@ def webhook():
                     "dialTimeoutDurationSeconds": 30,
                     "events": {
                         "onAnswer": [{"command": "bridgeCall", "bridgeName": "main-bridge"}],
+                        # Always specify callName to target the OTHER leg.
+                        # A bare {"command": "hangup"} would target the current
+                        # (callee) leg, which is already disconnecting.
                         "onHangup": [{"command": "hangup", "callName": "caller"}]
                     }
                 }
@@ -301,6 +331,7 @@ $app->post('/webhook', function (Request $request, Response $response) use ($sin
                     'dialTimeoutDurationSeconds' => 30,
                     'events'  => [
                         'onAnswer' => [['command' => 'bridgeCall', 'bridgeName' => 'main-bridge']],
+                        // Always specify callName to target the OTHER leg.
                         'onHangup' => [['command' => 'hangup', 'callName' => 'caller']],
                     ],
                 ],
@@ -373,6 +404,9 @@ public class Server {
         if ("call.incoming".equals(event)) {
             // Commands run directly at the top level; "callName" names the inbound
             // (caller) leg and "events.onHangup" handles the caller hanging up.
+            // Every hangup command specifies callName to target the OTHER leg;
+            // a bare hangup inside onHangup would target the leg already
+            // disconnecting, making it a no-op.
             Map<String, Object> svaml = Map.of(
                 "callName", "caller",
                 "commands", List.of(
@@ -460,7 +494,7 @@ curl -X PATCH \
   }'
 ```
 
-`fallbackUrl` is optional but recommended. Once the primary `url` starts returning errors, Sinch switches **future** requests to the fallback (it does not retry the *same* failed request against it).
+`fallbackUrl` is optional but recommended. When the primary `url` fails, Sinch immediately re-sends *that same event* to `fallbackUrl`. After several consecutive primary failures, Sinch bypasses the primary entirely and sends all requests to the fallback until the primary recovers (retried once every 60 seconds). See the Webhooks *Timeouts and failover* section in the API reference for the authoritative algorithm.
 
 > You can also set this from the [Sinch Dashboard](https://dashboard.sinch.com/voice/services) (Voice → Services → your service → Call behavior). The dashboard is the quickest path for a one-off test.
 
@@ -554,6 +588,20 @@ Bridges are auto-created by name: the first leg into a `bridgeName` creates the 
 ### Inline `events` suppress the per-leg webhook
 
 Because the `dial` defines an inline `events` block, the platform runs those commands and **no** `call.answered` / `call.hangup` webhook fires for the Party B leg. Omit `events` to receive those webhooks instead; an explicit `events: {}` suppresses them without running anything.
+
+### Why `hangup` needs `callName` in `onHangup` handlers
+
+The `hangup` command without a `callName` ends the **current** call leg. Inside an `onHangup` handler, the current leg is the one that is *already disconnecting*, so a bare `{ "command": "hangup" }` is a no-op. To tear down the *other* party's leg, you must specify `callName`:
+
+```json
+// Callee's onHangup -> end the caller leg
+"onHangup": [{ "command": "hangup", "callName": "caller" }]
+
+// Caller's onHangup -> end the callee leg
+"onHangup": [{ "command": "hangup", "callName": "callee" }]
+```
+
+Every `onHangup` handler in this tutorial follows this pattern. If you adapt these examples, always include `callName` in your `onHangup` commands.
 
 ---
 
@@ -760,6 +808,7 @@ The `POST /calls` body is a `callRequest`: a top-level `commands` array (the sam
 | **Recording** | Insert `startRecording` after the `bridgeCall` if compliance requires an audit log. See [3.3 Recording & Transcription](../3.3-recording-transcription/description.md). |
 | **Webhook latency** | Sinch enforces a per-webhook response timeout (treat ~5 s as the budget). Cache your mapping in memory and respond fast. |
 | **Header / signature validation** | Verify the CloudEvents headers and the request signature before acting. See [2.1 Handle Inbound PSTN Calls](../2.1-inbound-pstn/description.md). |
+| **Idempotent webhook handlers** | A failed primary delivery is re-sent to `fallbackUrl`, so the same event can arrive more than once. Deduplicate on the `ce-id` and `ce-source` header pair. |
 | **Carrier caller-ID rules** | If you ever pass Party A's real caller ID through, confirm your carrier accepts it. Most don't. |
 
 ## What the OpenAPI spec says: at a glance
@@ -767,7 +816,7 @@ The `POST /calls` body is a `callRequest`: a top-level `commands` array (the sam
 - The `call.incoming` response (`webhookResponse`) is `{ "commands": [...], "callName"?, "events"?: { "onHangup": [...] } }`. Commands run directly; no wrapper command. `callName` and `events` are honored **only** in responses to `call.incoming`.
 - `bridgeCall` requires `bridgeName`; the bridge is auto-created on first use and joined thereafter.
 - `dial` requires `to`; `from` / `to` are typed endpoints (`type: PHONE` with `phone.number` in E.164). The presented caller ID is the leg's `from`. Lifecycle is handled via `events` (`onAnswer`, `onBusy`, `onReject`, `onTimeout`, `onHangup`, `onFailure`).
-- `hangup` accepts a `callName` to drop a specific named leg while keeping the session and other legs alive.
+- `hangup` accepts a `callName` to drop a specific named leg while keeping the session and other legs alive. **Without `callName` it ends the current leg.** Inside an `onHangup` handler, the current leg is already disconnecting, so always specify `callName` to target the other party.
 - `POST /v2/projects/{projectId}/calls` takes a `callRequest` (top-level `commands`) and returns `{ projectId, serviceId, sessionId }` on `201`.
 - `PATCH /v2/projects/{projectId}/services/{serviceId}` (`updateService`) sets `callBehavior` (`NONE` | `WEBHOOK` | `STATIC`).
-- `POST /v2/projects/{projectId}/svaml/validate` validates a SVAML payload (`{ "svaml": {"commands":[ ...commands ]} }`) → `{ "isValid", "errors" }`.
+- `POST /v2/projects/{projectId}/svaml/validate` validates a full SVAML payload (`{ "svaml": { "commands": [...], "callName"?: ..., "events"?: {...} }, "validationType"?: "NORMAL" | "STRICT" }`) and returns `{ "isValid", "errors" }`. A `200` means validation ran, not that the payload is valid; always read `isValid`.

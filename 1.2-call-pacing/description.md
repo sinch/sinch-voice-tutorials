@@ -332,7 +332,7 @@ URL="https://voice.api.sinch.com/v2/projects/${PROJECT_ID}/batches/${BATCH_ID}"
 while true; do
   BODY=$(curl -s -u "${KEY_ID}:${KEY_SECRET}" "${URL}")
   if command -v jq > /dev/null; then
-    echo "$BODY" | jq '{batchId, callCount, completed, failed, inProgress, queued, endTime}'
+    echo "$BODY" | jq '{batchId, sessionCount, completed, failed, inProgress, queued, endTime}'
     DONE=$(echo "$BODY" | jq -r 'if .queued==0 and .inProgress==0 then "yes" else "no" end')
   else
     echo "$BODY"
@@ -351,7 +351,7 @@ Each batch here holds a single call, so the summary is small:
 ```json
 {
   "batchId":     "01BX5ZZKBKACTAV9WEVGEMMVRC",
-  "callCount":   1,
+  "sessionCount":   1,
   "queued":      0,
   "inProgress":  0,
   "completed":   1,
@@ -428,7 +428,7 @@ curl -u "$KEY_ID:$KEY_SECRET" \
 ```json
 {
   "batchId":      "01BX5ZZKBKACTAV9WEVGEMMVRC",
-  "callCount":    1,
+  "sessionCount":    1,
   "queued":       0,
   "inProgress":   1,
   "completed":    0,
@@ -497,5 +497,5 @@ The response includes a `calls[]` array, one entry per call leg, with fields lik
 - `parameters` (`requestParameters`): an **object** mapping string keys (1-255 chars) to string values, referenced in `commands` as `@key`. One object per request, so one queued call per request. (Spec narrative shows an array, flagged above as needing verification.)
 - `batchOptions.maxCps`: integer 1-1000, default 1000.
 - `batchOptions.ttlSeconds`: integer 1-10800, default 10800.
-- `GET /v2/projects/{projectId}/batches/{batchId}`: returns `batchSummary` with `callCount`, `queued`, `inProgress`, `completed`, `failed`, `requestedCps`, `ttlSeconds`, `endTime`, and `callSessions[]` (`id`, `status` in {`QUEUED`, `IN_PROGRESS`, `COMPLETED`}).
+- `GET /v2/projects/{projectId}/batches/{batchId}`: returns `batchSummary` with `sessionCount`, `queued`, `inProgress`, `completed`, `failed`, `requestedCps`, `ttlSeconds`, `endTime`, and `callSessions[]` (`id`, `status` in {`QUEUED`, `IN_PROGRESS`, `COMPLETED`}).
 - `DELETE /v2/projects/{projectId}/batches/{batchId}`: stops processing of queued calls; `202 Accepted` with a `{ "result": ... }` body.
