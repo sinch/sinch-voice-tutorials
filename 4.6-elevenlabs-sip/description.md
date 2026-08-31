@@ -11,7 +11,7 @@ Four scenarios are covered, all using the same underlying pattern of bridging tw
 3. **PSTN-out to ElevenLabs** : Sinch dials a phone number and, on answer, bridges the callee to the ElevenLabs agent.
 4. **SIP-out to ElevenLabs** : Sinch dials an external SIP endpoint and, on answer, bridges the callee to the ElevenLabs agent.
 
-**When to use this vs the WebSocket bridge:** Use SIP when you want ElevenLabs to own the entire voice pipeline (STT, LLM, TTS) with zero relay infrastructure on your side. Use the [WebSocket bridge](/docs/voice/tutorials/integrate-ai-agent-bridge) when you need to intercept or transform the raw audio frames between Sinch and ElevenLabs (for example, to inject custom audio, apply gain, or log PCM). If you only need to exchange plain text with your own backend and want Sinch to handle speech-to-text and TTS, use [Voice Relay](/docs/voice/tutorials/voice-relay) instead.
+**When to use this vs the WebSocket bridge:** Use SIP when you want ElevenLabs to own the entire voice pipeline (STT, LLM, TTS) with zero relay infrastructure on your side. Use the [WebSocket bridge](../4.3-elevenlabs-bridge/description.md) when you need to intercept or transform the raw audio frames between Sinch and ElevenLabs (for example, to inject custom audio, apply gain, or log PCM). If you only need to exchange plain text with your own backend and want Sinch to handle speech-to-text and TTS, use [Voice Relay](../4.1-voice-relay/description.md) instead.
 
 ## What success looks like
 
@@ -788,10 +788,10 @@ SIP audio negotiation happens at the SIP level between Sinch and ElevenLabs, so 
 | **Hangup propagation** | Both legs need mutual `onHangup` handlers. The examples include them; do not remove them. |
 | **ElevenLabs costs** | ElevenLabs bills per minute of agent usage. Cap exposure with `maxCallDurationSeconds`. |
 | **Failover** | If the ElevenLabs SIP endpoint is unreachable, the agent `dial` will time out and the caller hears nothing. Consider adding an `onTimeout` or `onFailure` handler on the agent leg to play a fallback TTS message or route to a human. |
-| **Idempotency (outbound)** | For outbound calls, send an `Idempotency-Key` header to make retries safe. See [Make an Outbound Call](/docs/voice/tutorials/outbound-call) for details. |
-| **AMD (outbound PSTN)** | If dialing mobile numbers that may go to voicemail, insert an `amd` command before bridging. See [AMD](/docs/voice/tutorials/amd). |
-| **Recording** | If you need call recordings, add `startRecording` inside `onAnswer`. See [Recording & Transcription](/docs/voice/tutorials/recording-and-transcription). |
-| **Monitoring** | Use the `sessionId` from the `POST` response (or retrieve it for inbound calls) with `GET /v2/projects/{projectId}/sessions/{sessionId}` to inspect call legs and outcomes. See [Track Call Status](/docs/voice/tutorials/track-call-status). |
+| **Idempotency (outbound)** | For outbound calls, send an `Idempotency-Key` header to make retries safe. See [Make an Outbound Call](../1.1-outbound-call/description.md) for details. |
+| **AMD (outbound PSTN)** | If dialing mobile numbers that may go to voicemail, insert an `amd` command before bridging. See [AMD](../3.2-amd/description.md). |
+| **Recording** | If you need call recordings, add `startRecording` inside `onAnswer`. See [Recording & Transcription](../3.3-recording-transcription/description.md). |
+| **Monitoring** | Use the `sessionId` from the `POST` response (or retrieve it for inbound calls) with `GET /v2/projects/{projectId}/sessions/{sessionId}` to inspect call legs and outcomes. See [Track Call Status](../3.5-track-call-status/description.md). |
 
 ## API reference (at a glance)
 
