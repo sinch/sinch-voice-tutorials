@@ -163,7 +163,7 @@ JSON
 
 Auth is **HTTP Basic** with your project key (`KEY_ID:KEY_SECRET`). Set `KEY_ID`, `KEY_SECRET`, `PROJECT_ID`, and `SERVICE_ID` from the tutorials-root `.env` (or your shell). Replace `endpoint` with your current `wss://` ngrok URL. It changes every time you restart ngrok on the free tier.
 
-> **`ttsVoice` value.** `Emma` is the example voice from the spec; `Tiffany` (shipped in `static.txt`) is another. For the full list of supported voices see the [Text-to-Speech Voices reference](https://developer.sinch.com/docs/voice/api-reference/text-to-speech-voices). If a voice name is wrong the platform falls back or errors at call time, so verify the name against that list.
+> **`ttsVoice` value.** `Emma` is the example voice from the spec; `Tiffany` (shipped in `static.txt`) is another. For the full list of supported voices see the [Text-to-Speech Voices reference](https://developers.sinch.com/docs/voice-2.0/api-reference/text-to-speech-voices). If a voice name is wrong the platform falls back or errors at call time, so verify the name against that list.
 
 > **Spec note: `static.events`.** The OpenAPI `staticCallBehavior.events` schema documents only `onHangup` at the top level (used above). The per-leg `dial.events` block supports the full call-event set (`onAnswer`, etc.).
 
